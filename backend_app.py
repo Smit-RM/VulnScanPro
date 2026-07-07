@@ -130,7 +130,8 @@ if REDIS_URL:
                                result_serializer='json', timezone='UTC')
         _CELERY_ENABLED = True
         _SIO_MESSAGE_QUEUE = REDIS_URL
-        logger.info("Celery + Redis task backend enabled (broker=%s)", REDIS_URL)
+        logger.info(
+            "Celery + Redis task backend enabled (broker=%s)", REDIS_URL)
     except Exception as _e:
         logger.warning(
             "REDIS_URL set but Celery/redis unavailable (%s); using threading fallback",
@@ -138,10 +139,12 @@ if REDIS_URL:
 
 # The web Socket.IO server joins the same Redis message queue when configured, so it
 # can deliver progress events that the Celery worker publishes from another process.
-_sio_kwargs = dict(cors_allowed_origins=_ALLOWED_ORIGINS, async_mode='eventlet')
+_sio_kwargs = dict(cors_allowed_origins=_ALLOWED_ORIGINS,
+                   async_mode='eventlet')
 if _SIO_MESSAGE_QUEUE:
     _sio_kwargs['message_queue'] = _SIO_MESSAGE_QUEUE
 socketio = SocketIO(app, **_sio_kwargs)
+
 
 @app.before_request
 def check_user_active():
@@ -165,6 +168,7 @@ def check_user_active():
     except Exception:
         # Ignore JWT verification errors here; standard @jwt_required() decorators on the endpoints will raise them.
         pass
+
 
 # ============ SECURITY RESPONSE HEADERS ============
 # Practice what the scanner preaches: set the same headers on our OWN responses
@@ -264,15 +268,20 @@ def _float_env(key, default):
 
 # ---- Config (all env-overridable) ----
 RL_MAX = _int_env('LOGIN_RL_MAX', 10)                 # max attempts ...
-RL_WINDOW = _int_env('LOGIN_RL_WINDOW_SEC', 60)       # ... per IP per window (sec)
-LOCK_THRESHOLD = _int_env('LOGIN_LOCK_THRESHOLD', 5)  # consecutive fails -> lock
-LOCK_DURATION = _int_env('LOGIN_LOCK_DURATION_SEC', 900)   # lock length (15 min)
+# ... per IP per window (sec)
+RL_WINDOW = _int_env('LOGIN_RL_WINDOW_SEC', 60)
+# consecutive fails -> lock
+LOCK_THRESHOLD = _int_env('LOGIN_LOCK_THRESHOLD', 5)
+LOCK_DURATION = _int_env('LOGIN_LOCK_DURATION_SEC',
+                         900)   # lock length (15 min)
 DELAY_BASE = _float_env('LOGIN_DELAY_BASE_SEC', 0.25)
 DELAY_CAP = _float_env('LOGIN_DELAY_CAP_SEC', 4.0)
 DELAY_JITTER = _float_env('LOGIN_DELAY_JITTER_SEC', 0.10)
-DELAY_DECAY = _int_env('LOGIN_DELAY_DECAY_SEC', 900)  # reset an IP's delay streak after idle
+# reset an IP's delay streak after idle
+DELAY_DECAY = _int_env('LOGIN_DELAY_DECAY_SEC', 900)
 TRUST_XFF = os.environ.get('TRUST_XFF', '0') == '1'
-TRUSTED_PROXY_COUNT = _int_env('TRUSTED_PROXY_COUNT', 1)  # proxy hops we own (right side of XFF)
+# proxy hops we own (right side of XFF)
+TRUSTED_PROXY_COUNT = _int_env('TRUSTED_PROXY_COUNT', 1)
 _SWEEP_EVERY = 50          # opportunistic cleanup cadence
 _ACCTS_MAX = 50_000        # hard caps bound worst-case memory use
 _IP_MAX = 50_000
@@ -289,24 +298,30 @@ APP_BASE_URL = os.environ.get('APP_BASE_URL', 'http://127.0.0.1:5000')
 
 # Require new users to verify their email before they can log in. Default ON; set
 # REQUIRE_EMAIL_VERIFICATION=0 to disable (e.g. local testing without SMTP).
-REQUIRE_EMAIL_VERIFICATION = os.environ.get('REQUIRE_EMAIL_VERIFICATION', '1') != '0'
+REQUIRE_EMAIL_VERIFICATION = os.environ.get(
+    'REQUIRE_EMAIL_VERIFICATION', '1') != '0'
 
 # Constant-time dummy hash (same bcrypt cost as real hashes) — lets the no-user
 # and malformed-input branches burn the same CPU as a real password check, so
 # they aren't a faster (distinguishable) path.
-_DUMMY_HASH = bcrypt.generate_password_hash(secrets.token_hex(16)).decode('utf-8')
+_DUMMY_HASH = bcrypt.generate_password_hash(
+    secrets.token_hex(16)).decode('utf-8')
 
 # Stateless, signed, expiring reset token — needs no DB column, survives restart.
-_reset_serializer = URLSafeTimedSerializer(app.config['SECRET_KEY'], salt='pw-reset')
-_verify_serializer = URLSafeTimedSerializer(app.config['SECRET_KEY'], salt='email-verify')
+_reset_serializer = URLSafeTimedSerializer(
+    app.config['SECRET_KEY'], salt='pw-reset')
+_verify_serializer = URLSafeTimedSerializer(
+    app.config['SECRET_KEY'], salt='email-verify')
 
 # ---- Thread-safe in-memory store ----
 # One coarse lock guards the dicts; it is only ever held for O(1) dict mutations,
 # never across a sleep / bcrypt / DB / SMTP call.
 _THROTTLE_LOCK = threading.Lock()
 _call_counter = 0
-_IP_HITS = {}        # ip -> list[monotonic timestamps]   (drives the 10/min rate limit)
-_IP_FAILS = {}       # ip -> [consecutive_fail_count, last_seen]  (drives the progressive delay)
+# ip -> list[monotonic timestamps]   (drives the 10/min rate limit)
+_IP_HITS = {}
+# ip -> [consecutive_fail_count, last_seen]  (drives the progressive delay)
+_IP_FAILS = {}
 
 
 class _AcctState:
@@ -363,7 +378,8 @@ def _maybe_sweep(now):
         for _, u in victims[:len(_ACCTS) - _ACCTS_MAX]:
             del _ACCTS[u]
     if len(_IP_HITS) > _IP_MAX:
-        victims = sorted(_IP_HITS.items(), key=lambda kv: kv[1][-1] if kv[1] else 0)
+        victims = sorted(_IP_HITS.items(),
+                         key=lambda kv: kv[1][-1] if kv[1] else 0)
         for ip, _ in victims[:len(_IP_HITS) - _IP_MAX]:
             del _IP_HITS[ip]
     if len(_IP_FAILS) > _IP_MAX:
@@ -392,7 +408,8 @@ def rate_limit_login(fn):
                 hits.append(now)
                 over_limit = False
         if over_limit:
-            logger.warning("login rate-limited ip=%s (>%s/%ss)", ip, RL_MAX, RL_WINDOW)
+            logger.warning("login rate-limited ip=%s (>%s/%ss)",
+                           ip, RL_MAX, RL_WINDOW)
             try:
                 db.session.add(AuditLog(event_type='rate_limit', ip_address=ip,
                                         details=f'IP rate limited after {RL_MAX} requests in {RL_WINDOW}s'))
@@ -400,7 +417,8 @@ def rate_limit_login(fn):
             except Exception as _e:
                 logger.error("Failed to write rate_limit audit log: %s", _e)
                 db.session.rollback()
-            resp = jsonify({'error': 'Too many requests. Please try again later.'})
+            resp = jsonify(
+                {'error': 'Too many requests. Please try again later.'})
             resp.headers['Retry-After'] = str(retry_after)
             return resp, 429
         return fn(*args, **kwargs)
@@ -488,8 +506,10 @@ def _login_reject(password, delay, did_bcrypt):
     progressive delay, then returns the byte-identical 401. This is what makes
     'locked' and 'wrong password' indistinguishable in body and timing."""
     if not did_bcrypt:
-        bcrypt.check_password_hash(_DUMMY_HASH, password or '')   # burn equivalent CPU
-    eventlet.sleep(delay)                                         # cooperative; outside the lock
+        bcrypt.check_password_hash(
+            _DUMMY_HASH, password or '')   # burn equivalent CPU
+    # cooperative; outside the lock
+    eventlet.sleep(delay)
     # Single generic message for EVERY failure cause (wrong password, unknown
     # user, locked account, malformed body) — never reveals which, and never
     # discloses the lockout. Same status + body + timing for all.
@@ -513,8 +533,10 @@ def _send_lockout_email(user_id):
             token = _reset_serializer.dumps({'uid': user.id, 'pwv': pwv})
             link = f"{APP_BASE_URL}/reset?token={token}"
             if not SMTP_HOST:
-                logger.info("lockout email skipped (SMTP unconfigured) uid=%s", user_id)
-                logger.debug("dev reset link generated uid=%s (token suppressed)", user_id)
+                logger.info(
+                    "lockout email skipped (SMTP unconfigured) uid=%s", user_id)
+                logger.debug(
+                    "dev reset link generated uid=%s (token suppressed)", user_id)
                 return
             msg = EmailMessage()
             msg['Subject'] = 'Your account has been temporarily locked'
@@ -552,12 +574,14 @@ def _send_verification_email(user_id):
             if user is None:
                 return
             link = _verification_link(user.id)
-            logger.info("Generated verification link for uid=%s: %s", user_id, link)
-            
+            logger.info(
+                "Generated verification link for uid=%s: %s", user_id, link)
+
             if not SMTP_HOST:
-                logger.info("Verification email skipped (SMTP unconfigured) uid=%s", user_id)
+                logger.info(
+                    "Verification email skipped (SMTP unconfigured) uid=%s", user_id)
                 return
-                
+
             name = user.display_name or user.username
             msg = EmailMessage()
             msg['Subject'] = 'Verify your email address for VulnScan Pro'
@@ -623,7 +647,8 @@ def _send_verification_email(user_id):
                 smtp.send_message(msg)
             logger.info("Verification email sent to %s", user.email)
         except Exception as e:
-            logger.error("Verification email send failed uid=%s err=%s", user_id, e)
+            logger.error(
+                "Verification email send failed uid=%s err=%s", user_id, e)
 
 
 def _verified_success_page(already=False):
@@ -761,7 +786,8 @@ class User(db.Model):
 class AuditLog(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
-    event_type = db.Column(db.String(50), nullable=False) # 'login_success', 'login_fail', 'lockout', 'rate_limit', 'validation_fail', 'user_update'
+    # 'login_success', 'login_fail', 'lockout', 'rate_limit', 'validation_fail', 'user_update'
+    event_type = db.Column(db.String(50), nullable=False)
     username = db.Column(db.String(80))
     ip_address = db.Column(db.String(45))
     details = db.Column(db.Text)
@@ -905,7 +931,7 @@ class Vulnerability(db.Model):
     def to_dict(self):
         return {
             'id': self.id, 'scan_id': self.scan_id, 'vuln_type': self.vuln_type,
-            'text': self.title, # backup search text
+            'text': self.title,  # backup search text
             'severity': self.severity, 'title': self.title, 'description': self.description,
             'affected_url': self.affected_url, 'parameter': self.parameter,
             'payload': self.payload, 'evidence': self.evidence, 'remediation': self.remediation,
@@ -964,8 +990,10 @@ class VulnerabilityScanner:
         r'(?i)\b(ami-id|ami-launch-index|instance-id|instance-type|local-ipv4|'
         r'public-ipv4|local-hostname|public-hostname|security-credentials|'
         r'reservation-id|public-keys|placement)\b')
-    _SSRF_TIMING_MIN = 4.0     # a black-hole probe must hang at least this long (s)
-    _SSRF_TIMING_DELTA = 3.0   # ... AND exceed the fast control by at least this (s)
+    # a black-hole probe must hang at least this long (s)
+    _SSRF_TIMING_MIN = 4.0
+    # ... AND exceed the fast control by at least this (s)
+    _SSRF_TIMING_DELTA = 3.0
 
     # A path segment that is a canonical UUID — treated as an object id for IDOR.
     _UUID_RE = re.compile(
@@ -1309,7 +1337,8 @@ class VulnerabilityScanner:
                 # (a) Reflection: aim at the cloud-metadata service; require >= 2
                 #     distinct metadata markers echoed back in a 200 body.
                 try:
-                    r = _probe(param, 'http://169.254.169.254/latest/meta-data/')
+                    r = _probe(
+                        param, 'http://169.254.169.254/latest/meta-data/')
                     if r is not None and r.status_code == 200:
                         markers = {m.lower() for m in
                                    self._SSRF_METADATA_RE.findall(r.text or '')}
@@ -1334,7 +1363,8 @@ class VulnerabilityScanner:
                                f'http://127.0.0.1:{port}/'):
                     try:
                         r = _probe(param, target, allow_redirects=False)
-                        loc = r.headers.get('Location', '') if r is not None else ''
+                        loc = r.headers.get(
+                            'Location', '') if r is not None else ''
                         if (r is not None and r.status_code in (301, 302, 303, 307, 308)
                                 and any(h in loc for h in INTERNAL_MARKERS)):
                             findings.append({
@@ -1355,14 +1385,17 @@ class VulnerabilityScanner:
                 #     control (fast DNS failure). A large, reproducible gap only
                 #     occurs if the server actually dials the supplied address.
                 bh_port = random.randint(20000, 65500)
-                blackhole = f'http://192.0.2.1:{bh_port}/'          # RFC5737, unrouted
-                control = f'http://ssrf-control-{secrets.token_hex(4)}.invalid/'  # NXDOMAIN
+                # RFC5737, unrouted
+                blackhole = f'http://192.0.2.1:{bh_port}/'
+                # NXDOMAIN
+                control = f'http://ssrf-control-{secrets.token_hex(4)}.invalid/'
                 t_control = _timed(param, control)
                 t_black = _timed(param, blackhole)
                 if (t_control is not None and t_black is not None
                         and t_black >= self._SSRF_TIMING_MIN
                         and (t_black - t_control) >= self._SSRF_TIMING_DELTA):
-                    t_black2 = _timed(param, blackhole)   # reproduce to reject jitter
+                    # reproduce to reject jitter
+                    t_black2 = _timed(param, blackhole)
                     if t_black2 is not None and t_black2 >= self._SSRF_TIMING_MIN:
                         findings.append({
                             'vuln_type': 'ssrf', 'severity': 'high',
@@ -1648,7 +1681,8 @@ class VulnerabilityScanner:
                     scan.status = 'cancelled'
                     scan.completed_at = datetime.utcnow()
                     db.session.commit()
-                    self.emit_progress('Scan cancelled by user.', scan.progress)
+                    self.emit_progress(
+                        'Scan cancelled by user.', scan.progress)
                     with _cancel_lock:
                         _cancelled_scans.discard(self.scan_id)
                     return []
@@ -1694,6 +1728,7 @@ class VulnerabilityScanner:
 # One entry point, two backends. dispatch_scan() is what the API and scheduler
 # call; it hides whether the scan runs in a Celery worker or a local thread.
 
+
 if _CELERY_ENABLED:
     @celery_app.task(name='vulnscan.run_scan')
     def run_scan_task(scan_id, target_url, config):
@@ -1721,7 +1756,8 @@ def dispatch_scan(scan_id, target_url, config):
         thread = threading.Thread(target=scanner.run_scan)
         thread.daemon = True
         thread.start()
-        logger.info("scan %s started in background thread (threading fallback)", scan_id)
+        logger.info(
+            "scan %s started in background thread (threading fallback)", scan_id)
 
 # ============ REPORT GENERATOR ============
 
@@ -1832,6 +1868,7 @@ class ReportGenerator:
 # Server-side validation for every auth form field. These checks run on EVERY
 # request regardless of any client-side validation — the client is never trusted.
 
+
 # Sanitization patterns (applied to rendered identity fields only)
 _SCRIPT_BLOCK_RE = re.compile(
     r'<script\b[^>]*>.*?</script\s*>', re.IGNORECASE | re.DOTALL)
@@ -1866,7 +1903,9 @@ def sanitize_text(value):
 
 class RegisterSchema(BaseModel):
     """Validation schema for POST /api/auth/register."""
-    model_config = {'extra': 'ignore'}  # silently drop unexpected fields (e.g. confirm_password)
+    model_config = {
+        # silently drop unexpected fields (e.g. confirm_password)
+        'extra': 'ignore'}
 
     username: str
     email: str
@@ -1878,7 +1917,8 @@ class RegisterSchema(BaseModel):
     def _validate_username(cls, v):
         v = sanitize_text(v)
         if not _USERNAME_RE.match(v):
-            raise ValueError('username must be 3-30 chars: letters, digits, . _ -')
+            raise ValueError(
+                'username must be 3-30 chars: letters, digits, . _ -')
         return v
 
     @field_validator('email')
@@ -2001,7 +2041,8 @@ def register():
         # nothing, send nothing. Burn an equivalent bcrypt cost so the masked path
         # isn't a faster (timing-distinguishable) branch than a real signup.
         bcrypt.check_password_hash(_DUMMY_HASH, data.password)
-        logger.info("Registration masked: email already registered (no enumeration disclosed)")
+        logger.info(
+            "Registration masked: email already registered (no enumeration disclosed)")
         try:
             db.session.add(AuditLog(event_type='validation_fail', ip_address=request.remote_addr,
                                     details="Registration attempt on an already-registered email (masked)"))
@@ -2038,7 +2079,8 @@ def register():
 
     if REQUIRE_EMAIL_VERIFICATION:
         # Dispatch verification email asynchronously (best-effort; no-op without SMTP).
-        threading.Thread(target=_send_verification_email, args=(user.id,), daemon=True).start()
+        threading.Thread(target=_send_verification_email,
+                         args=(user.id,), daemon=True).start()
 
     resp = {'message': success_msg}
     # Dev convenience: with no SMTP configured, surface the link so verification is
@@ -2049,7 +2091,8 @@ def register():
 
 
 @app.route('/api/auth/login', methods=['POST'])
-@rate_limit_login  # outermost gate: enforce 10/IP/min (429) before any account logic
+# outermost gate: enforce 10/IP/min (429) before any account logic
+@rate_limit_login
 def login():
     ip = _client_ip()
 
@@ -2131,7 +2174,8 @@ def login():
 
     if should_email and user is not None:
         # Real OS thread (not a greenlet): blocking SMTP can't stall the eventlet hub.
-        threading.Thread(target=_send_lockout_email, args=(user.id,), daemon=True).start()
+        threading.Thread(target=_send_lockout_email,
+                         args=(user.id,), daemon=True).start()
     delay = _delay_for(_record_ip_failure(ip))
     return _login_reject(password=data.password, delay=delay, did_bcrypt=True)
 
@@ -2206,7 +2250,8 @@ def change_password():
     try:
         data = ChangePasswordSchema(**payload)
     except ValidationError as e:
-        _log_validation_failure('/api/auth/change-password', e, request.remote_addr)
+        _log_validation_failure(
+            '/api/auth/change-password', e, request.remote_addr)
         # Generic message — don't reveal which rule failed.
         return jsonify({'error': 'Password does not meet requirements'}), 400
 
@@ -2297,6 +2342,7 @@ def admin_get_users():
     users = User.query.all()
     return jsonify([u.to_dict() for u in users])
 
+
 @app.route('/api/admin/users/<user_id>', methods=['PUT'])
 @admin_required
 def admin_update_user(user_id):
@@ -2304,7 +2350,7 @@ def admin_update_user(user_id):
     data = request.get_json()
     if not data:
         data = {}
-    
+
     # Track original state for logging
     old_role = user.role
     old_active = user.is_active
@@ -2316,7 +2362,7 @@ def admin_update_user(user_id):
         user.is_active = bool(data['is_active'])
     if 'email_verified' in data:
         user.email_verified = bool(data['email_verified'])
-    
+
     db.session.commit()
 
     # Log user update event
@@ -2327,8 +2373,9 @@ def admin_update_user(user_id):
         if user.is_active != old_active:
             details.append(f"active: {old_active} -> {user.is_active}")
         if user.email_verified != old_verified:
-            details.append(f"verified: {old_verified} -> {user.email_verified}")
-        
+            details.append(
+                f"verified: {old_verified} -> {user.email_verified}")
+
         details_msg = f"Updated user '{user.username}': {', '.join(details)}" if details else f"No changes to user '{user.username}'"
         db.session.add(AuditLog(event_type='user_update', username=user.username, ip_address=request.remote_addr,
                                 details=details_msg))
@@ -2338,13 +2385,14 @@ def admin_update_user(user_id):
 
     return jsonify(user.to_dict())
 
+
 @app.route('/api/admin/users/<user_id>', methods=['DELETE'])
 @admin_required
 def admin_delete_user(user_id):
     user = User.query.get_or_404(user_id)
     if user.username == 'admin':
         return jsonify({'error': 'Cannot delete primary admin user'}), 400
-    
+
     try:
         db.session.add(AuditLog(event_type='user_delete', username=user.username, ip_address=request.remote_addr,
                                 details=f"Admin deleted user '{user.username}'"))
@@ -2355,11 +2403,13 @@ def admin_delete_user(user_id):
     db.session.commit()
     return jsonify({'message': 'User deleted successfully'})
 
+
 @app.route('/api/admin/logs', methods=['GET'])
 @admin_required
 def admin_get_logs():
     logs = AuditLog.query.order_by(AuditLog.timestamp.desc()).limit(100).all()
     return jsonify([l.to_dict() for l in logs])
+
 
 @app.route('/api/admin/config', methods=['GET'])
 @admin_required
@@ -2383,7 +2433,7 @@ def admin_update_config():
     data = request.get_json()
     if not data:
         data = {}
-        
+
     try:
         updated_fields = []
         if 'LOGIN_RL_MAX' in data:
@@ -2392,33 +2442,33 @@ def admin_update_config():
                 raise ValueError("Rate limit max must be positive")
             RL_MAX = val
             updated_fields.append(f"RL_MAX={RL_MAX}")
-            
+
         if 'LOGIN_RL_WINDOW_SEC' in data:
             val = int(data['LOGIN_RL_WINDOW_SEC'])
             if val <= 0:
                 raise ValueError("Rate limit window must be positive")
             RL_WINDOW = val
             updated_fields.append(f"RL_WINDOW={RL_WINDOW}")
-            
+
         if 'LOGIN_LOCK_THRESHOLD' in data:
             val = int(data['LOGIN_LOCK_THRESHOLD'])
             if val <= 0:
                 raise ValueError("Lockout threshold must be positive")
             LOCK_THRESHOLD = val
             updated_fields.append(f"LOCK_THRESHOLD={LOCK_THRESHOLD}")
-            
+
         if 'LOGIN_LOCK_DURATION_SEC' in data:
             val = int(data['LOGIN_LOCK_DURATION_SEC'])
             if val <= 0:
                 raise ValueError("Lockout duration must be positive")
             LOCK_DURATION = val
             updated_fields.append(f"LOCK_DURATION={LOCK_DURATION}")
-            
+
         if updated_fields:
             admin_username = get_jwt_identity()
             admin_user = User.query.get(admin_username)
             user_name = admin_user.username if admin_user else 'admin'
-            
+
             db.session.add(AuditLog(
                 event_type='config_update',
                 username=user_name,
@@ -2426,10 +2476,10 @@ def admin_update_config():
                 details=f"Updated security settings: {', '.join(updated_fields)}"
             ))
             db.session.commit()
-            
+
     except (ValueError, TypeError) as e:
         return jsonify({'error': f'Invalid value: {str(e)}'}), 400
-        
+
     return jsonify({
         'LOGIN_RL_MAX': RL_MAX,
         'LOGIN_RL_WINDOW_SEC': RL_WINDOW,
@@ -2669,6 +2719,7 @@ def get_all_vulnerabilities():
              .all())
     return jsonify([v.to_dict() for v in vulns])
 
+
 @app.route('/api/schedules', methods=['GET'])
 @jwt_required()
 def get_schedules():
@@ -2737,7 +2788,7 @@ def is_cron_due(cron_expr, dt):
             return int(start) <= value <= int(end)
         return int(part) == value
 
-    cron_dow = dt.isoweekday() % 7 # 0 (Sun) to 6 (Sat)
+    cron_dow = dt.isoweekday() % 7  # 0 (Sun) to 6 (Sat)
     try:
         return (match_part(dt.minute, minute) and
                 match_part(dt.hour, hour) and
@@ -2762,16 +2813,20 @@ def start_scheduled_scan_worker(app_instance, socketio_instance):
                     if is_cron_due(sched.cron_expression, now):
                         if sched.last_run and (now - sched.last_run).total_seconds() < 50:
                             continue
-                        logger.info("Triggering scheduled scan for target: %s", sched.target.url)
+                        logger.info(
+                            "Triggering scheduled scan for target: %s", sched.target.url)
                         sched.last_run = now
-                        scan = Scan(target_id=sched.target_id, config=json.dumps({"scheduled": True}))
+                        scan = Scan(target_id=sched.target_id,
+                                    config=json.dumps({"scheduled": True}))
                         db.session.add(scan)
                         db.session.commit()
                         # Same dispatch path as the API: Celery when configured, else a thread.
-                        dispatch_scan(scan.id, sched.target.url, {"scheduled": True})
+                        dispatch_scan(scan.id, sched.target.url,
+                                      {"scheduled": True})
         except Exception as e:
             logger.warning("Error in scheduled scan background worker: %s", e)
             time.sleep(10)
+
 
 @app.route('/api/dashboard/stats', methods=['GET'])
 @jwt_required()
@@ -2826,7 +2881,8 @@ def ensure_user_schema():
             db.session.execute(
                 text('UPDATE "user" SET email_verified = 1'))
             db.session.commit()
-            logger.info("Migrated: added user.email_verified column and backfilled existing users")
+            logger.info(
+                "Migrated: added user.email_verified column and backfilled existing users")
         if 'must_change_password' not in columns:
             db.session.execute(
                 text('ALTER TABLE "user" ADD COLUMN must_change_password BOOLEAN DEFAULT 0'))
@@ -2834,7 +2890,8 @@ def ensure_user_schema():
             db.session.execute(
                 text("UPDATE \"user\" SET must_change_password = 1 WHERE username = 'admin'"))
             db.session.commit()
-            logger.info("Migrated: added user.must_change_password column; flagged admin")
+            logger.info(
+                "Migrated: added user.must_change_password column; flagged admin")
     except Exception as e:
         logger.warning("Schema migration check failed: %s", e)
 
@@ -2860,17 +2917,21 @@ if __name__ == '__main__':
 
             # Seed realistic initial security logs if AuditLog table is empty
             if not AuditLog.query.first():
-                db.session.add(AuditLog(event_type='user_created', username='admin', ip_address='127.0.0.1', details='Primary administrator account initialized during database seeding.'))
-                db.session.add(AuditLog(event_type='config_update', username='system', ip_address='127.0.0.1', details='Loaded default security profiles: RL_MAX=14, LOCK_THRESHOLD=5.'))
-                db.session.add(AuditLog(event_type='login_success', username='admin', ip_address='127.0.0.1', details='Admin logged in successfully from localhost.'))
+                db.session.add(AuditLog(event_type='user_created', username='admin', ip_address='127.0.0.1',
+                               details='Primary administrator account initialized during database seeding.'))
+                db.session.add(AuditLog(event_type='config_update', username='system', ip_address='127.0.0.1',
+                               details='Loaded default security profiles: RL_MAX=14, LOCK_THRESHOLD=5.'))
+                db.session.add(AuditLog(event_type='login_success', username='admin',
+                               ip_address='127.0.0.1', details='Admin logged in successfully from localhost.'))
                 db.session.commit()
             # Start background scheduler for scheduled scans
-            sched_thread = threading.Thread(target=start_scheduled_scan_worker, args=(app, socketio))
+            sched_thread = threading.Thread(
+                target=start_scheduled_scan_worker, args=(app, socketio))
             sched_thread.daemon = True
             sched_thread.start()
         port = int(os.environ.get('PORT', 5000))
         # Bind 127.0.0.1 by default (safe for local dev); containers set HOST=0.0.0.0.
-        host = os.environ.get('HOST', '127.0.0.1')
+        host = "0.0.0.0"
         print(f"Server running at http://{host}:{port}")
         print("Press Ctrl+C to stop.")
         socketio.run(app, host=host, port=port,
