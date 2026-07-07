@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s -o /dev/null -w \"HTTP %{http_code}\\\\n\" --max-time 15 \"https://services.nvd.nist.gov/rest/json/cves/2.0?cveId=CVE-2021-44228\")",
+      "Bash(curl -s -o /dev/null -w \"HTTP %{http_code}\\\\n\" --max-time 10 \"https://ipapi.co/8.8.8.8/json/\")",
+      "Bash(curl -s -o /dev/null -w \"HTTP %{http_code}\\\\n\" --max-time 10 \"https://freeipapi.com/api/json/8.8.8.8\")",
+      "Bash(curl -s -o /dev/null -w \"HTTP %{http_code}\\\\n\" --max-time 10 \"https://api.ip.sb/geoip/8.8.8.8\")",
+      "Bash(curl -s -o /dev/null -w \"HTTP %{http_code}\\\\n\" --max-time 10 \"https://api.ipify.org?format=json\")",
+      "Bash(curl -s -o /dev/null -w \"HTTP %{http_code} time %{time_total}\\\\n\" --max-time 25 \"https://services.nvd.nist.gov/rest/json/cves/2.0?cveId=CVE-2021-44228\")",
+      "Bash(curl -s -o /dev/null -w \"HTTP %{http_code}\\\\n\" --max-time 10 \"https://api.pwnedpasswords.com/range/5BAA6\")",
+      "Bash(curl -s -o /dev/null -w \"HTTP %{http_code}\\\\n\" --max-time 10 -H \"Accept: application/dns-json\" \"https://cloudflare-dns.com/dns-query?name=example.com&type=A\")",
+      "Bash(curl -s -o /dev/null -w \"HTTP %{http_code}\\\\n\" --max-time 15 \"https://api.certspotter.com/v1/issuances?domain=example.com&include_subdomains=true&expand=dns_names&expand=issuer&expand=cert\")",
+      "Bash(curl -sL -o /dev/null -w \"HTTP %{http_code} final=%{url_effective}\\\\n\" --max-time 10 \"https://freeipapi.com/api/json/8.8.8.8\")"
+    ]
+  }
+}

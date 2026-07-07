@@ -1,0 +1,15 @@
+flask
+flask-socketio
+flask-cors
+flask-jwt-extended
+flask-sqlalchemy
+flask-bcrypt
+pydantic>=2,<3
+requests
+beautifulsoup4
+eventlet
+lxml
+reportlab
+celery
+redis
+playwright

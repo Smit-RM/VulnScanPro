@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests & security checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      # ---- Gating check: a pytest failure MUST fail the build. ----
+      - name: Run tests (pytest)
+        run: pytest
+
+      # ---- Non-blocking check: report vulnerable dependencies. ----
+      # continue-on-error keeps the build green on unrelated upstream CVEs while
+      # still surfacing them in the logs. Flip to a hard gate by removing the line.
+      - name: Dependency vulnerability audit (pip-audit)
+        continue-on-error: true
+        run: pip-audit -r requirements.txt
+
+      # ---- Non-blocking check: static security lint of the app source. ----
+      - name: Static security lint (bandit)
+        continue-on-error: true
+        run: bandit -r . --exclude ./venv,./tests,./test_security_features.py,./integration_smoke_test.py

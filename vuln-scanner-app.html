@@ -1,0 +1,866 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>VulnScan Pro — Vulnerability Assessment Platform</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <!-- Socket.IO client — must match the server version (eventlet mode) -->
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  <link rel="stylesheet" href="static/app.css">
+</head>
+
+<body>
+  <div class="toast-wrap" id="toast-wrap"></div>
+  <div class="gbg"></div>
+  <div class="blob b1"></div>
+  <div class="blob b2"></div>
+  <div class="blob b3"></div>
+  <div class="ggrid"></div>
+
+
+  <!-- FORCED PASSWORD CHANGE MODAL (non-dismissible, shown after first login with default creds) -->
+  <div id="force-pw-modal" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.85);backdrop-filter:blur(8px);align-items:center;justify-content:center;flex-direction:column">
+    <div class="acard" style="max-width:440px;width:100%;position:relative">
+      <div style="text-align:center;margin-bottom:18px">
+        <div style="font-size:42px;margin-bottom:8px">🔐</div>
+        <div class="logo-title" style="font-size:20px">Password Change Required</div>
+        <div style="font-size:12px;color:var(--text3);margin-top:6px;line-height:1.6">You are using the default administrator password.<br>You must set a new password before continuing.</div>
+      </div>
+      <div id="force-pw-err" style="display:none;background:rgba(251,94,126,.12);border:1px solid rgba(251,94,126,.35);border-radius:8px;padding:10px 14px;font-size:12.5px;color:var(--red);margin-bottom:14px"></div>
+      <div class="fg">
+        <label>Current Password</label>
+        <input class="fi" id="fpc-cur" type="password" placeholder="Current password" autocomplete="current-password">
+        <div class="err-hint" id="err-fpc-cur"></div>
+      </div>
+      <div class="fg">
+        <label>New Password</label>
+        <input class="fi" id="fpc-new" type="password" placeholder="Min 8 chars with letters &amp; numbers" autocomplete="new-password">
+        <div class="err-hint" id="err-fpc-new"></div>
+      </div>
+      <div class="fg">
+        <label>Confirm New Password</label>
+        <input class="fi" id="fpc-conf" type="password" placeholder="Repeat new password" autocomplete="new-password" onkeydown="if(event.key==='Enter')doForcePasswordChange()">
+        <div class="err-hint" id="err-fpc-conf"></div>
+      </div>
+      <button class="btn btn-p" style="width:100%;justify-content:center;padding:11px;font-size:14px;margin-top:4px" onclick="doForcePasswordChange()" id="fpc-btn">🔐 Set New Password &amp; Continue</button>
+      <div style="margin-top:12px;font-size:11px;color:var(--text3);text-align:center">This dialog cannot be dismissed. Your account security depends on changing the default password.</div>
+    </div>
+  </div>
+
+  <div id="auth-screen">
+    <div class="acard">
+      <div style="text-align:center;margin-bottom:22px">
+        <div class="logo-icon">&#x1F6E1;&#xFE0F;</div>
+        <div class="logo-title">VulnScan Pro</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:3px">Smart Vulnerability Assessment Platform</div>
+      </div>
+      <div class="tabs" id="auth-tabs">
+        <button class="tab-btn on" id="tab-login-btn" onclick="authTab('login')">Sign In</button>
+        <button class="tab-btn" id="tab-reg-btn" onclick="authTab('register')">Register</button>
+      </div>
+      <div id="login-form">
+        <div class="fg">
+          <label>Username</label>
+          <input class="fi" id="lu" placeholder="Username" onkeydown="if(event.key==='Enter')doLogin()">
+          <div class="err-hint" id="err-lu"></div>
+        </div>
+        <div class="fg">
+          <label>Password</label>
+          <input class="fi" id="lp" type="password" placeholder="Password" onkeydown="if(event.key==='Enter')doLogin()">
+          <div class="err-hint" id="err-lp"></div>
+        </div>
+        <button class="btn btn-p" style="width:100%;justify-content:center;padding:11px;font-size:14px;margin-top:4px"
+          onclick="doLogin()" id="lbtn">&#x1F680; Sign In</button>
+      </div>
+      <div id="register-form" style="display:none">
+        <div class="fg">
+          <label>Full Name</label>
+          <input class="fi" id="ru-name" placeholder="Your full name">
+          <div class="err-hint" id="err-ru-name"></div>
+        </div>
+        <div class="fg">
+          <label>Email</label>
+          <input class="fi" id="ru-email" type="email" placeholder="you@company.com">
+          <div class="err-hint" id="err-ru-email"></div>
+        </div>
+        <div class="fg">
+          <label>Username</label>
+          <input class="fi" id="ru" placeholder="Choose a username (3+ chars)">
+          <div class="err-hint" id="err-ru"></div>
+        </div>
+        <div class="fg">
+          <label>Password</label>
+          <input class="fi" id="rp" type="password" placeholder="Create a strong password">
+          <div class="err-hint" id="err-rp"></div>
+        </div>
+        <div class="fg">
+          <label>Confirm Password</label>
+          <input class="fi" id="rp2" type="password" placeholder="Repeat your password" onkeydown="if(event.key==='Enter')doRegister()">
+          <div class="err-hint" id="err-rp2"></div>
+        </div>
+        <button class="btn btn-p" style="width:100%;justify-content:center;padding:11px;font-size:14px;margin-top:4px"
+          onclick="doRegister()" id="rbtn">&#x2728; Create Account</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="app">
+    <div class="app-inner">
+      <div id="sidebar">
+        <div class="sb-logo" onclick="toggleSB()">
+          <div class="sb-icon">&#x1F6E1;&#xFE0F;</div>
+          <div>
+            <div class="sb-brand">VulnScan Pro</div>
+            <div class="sb-sub">Security Platform</div>
+          </div>
+        </div>
+        <div class="sb-nav">
+          <div class="sb-sec">Main Menu</div>
+          <div class="si on" id="si-dashboard" data-tip="Dashboard" onclick="nav('dashboard')"><span class="si-ico">&#x1F4CA;</span><span
+              class="si-lbl sb-lbl">Dashboard</span></div>
+          <div class="si" id="si-projects" data-tip="Projects" onclick="nav('projects')"><span class="si-ico">&#x1F4C1;</span><span
+              class="si-lbl sb-lbl">Projects</span></div>
+          <div class="si" id="si-scanner" data-tip="Scanner" onclick="nav('scanner')"><span class="si-ico">&#x1F50D;</span><span
+              class="si-lbl sb-lbl">Scanner</span></div>
+          <div class="si" id="si-vulns" data-tip="Vulnerabilities" onclick="currentScanId=null;nav('vulns')"><span
+              class="si-ico">&#x26A0;&#xFE0F;</span><span class="si-lbl sb-lbl">Vulnerabilities</span></div>
+          <div class="si" id="si-reports" data-tip="Reports" onclick="nav('reports')"><span class="si-ico">&#x1F4CB;</span><span
+              class="si-lbl sb-lbl">Reports</span></div>
+          <div class="sb-sec">Tools</div>
+          <div class="si" id="si-tools" data-tip="Security Tools" onclick="nav('tools')"><span class="si-ico">&#x1F9F0;</span><span
+              class="si-lbl sb-lbl">Security Tools</span></div>
+          <div class="si" id="si-notes" data-tip="Notes" onclick="nav('notes')"><span class="si-ico">&#x1F4DD;</span><span
+              class="si-lbl sb-lbl">Notes</span></div>
+          <div class="si" id="si-settings" data-tip="Settings" onclick="nav('settings')"><span class="si-ico">&#x2699;&#xFE0F;</span><span
+              class="si-lbl sb-lbl">Settings</span></div>
+          <div class="si" id="si-admin" data-tip="Admin Panel" onclick="nav('admin')" style="display:none"><span class="si-ico">&#x1F6E1;&#xFE0F;</span><span
+              class="si-lbl sb-lbl">Admin Panel</span></div>
+        </div>
+        <div class="sb-user" style="cursor:pointer" onclick="openProfileModal()">
+          <div class="ua" id="ua">U</div>
+          <div class="sb-lbl" style="text-transform:none;letter-spacing:0">
+            <div style="font-size:13px;font-weight:600" id="un">User</div>
+            <div style="font-size:10px;color:var(--text3)" id="un-role">Standard User</div>
+          </div>
+        </div>
+      </div>
+
+      <div id="main-area">
+        <div id="topbar">
+          <button class="btn btn-g btn-sm" onclick="toggleSB()" title="Toggle sidebar">&#x2630;</button>
+          <div style="font-size:16px;font-weight:700;letter-spacing:-.01em" id="page-title">Dashboard</div>
+          <div class="topbar-search">
+            <span class="ts-ico">&#x1F50D;</span>
+            <input id="quick-search" type="text" autocomplete="off" placeholder="Search current view&#x2026;"
+              oninput="quickSearch(this.value)"
+              onkeydown="if(event.key==='Escape'){this.value='';quickSearch('')}">
+          </div>
+          <button class="btn btn-g btn-sm" onclick="nav('tools')">&#x1F9F0; Tools</button>
+          <button class="btn btn-p btn-sm" onclick="nav('scanner')">&#x1F50D; New Scan</button>
+          <div class="ua" id="ta" style="width:34px;height:34px;font-size:13px;cursor:pointer"
+            onclick="openProfileModal()">U</div>
+        </div>
+        <div id="content">
+
+          <!-- DASHBOARD -->
+          <div class="page active" id="page-dashboard">
+            <!-- Header row -->
+            <div
+              style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:20px">
+              <div>
+                <div class="pg-title" id="dash-greeting">📊 Dashboard</div>
+                <div class="pg-sub" style="margin-bottom:0" id="dash-subline">Security overview and recent activity
+                </div>
+              </div>
+              <div style="display:flex;gap:8px;align-items:center">
+                <div id="dash-clock"
+                  style="font-family:var(--mono);font-size:12px;color:var(--text3);padding:6px 12px;background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:8px">
+                </div>
+                <button class="btn btn-g btn-sm" onclick="nav('reports')">📋 Reports</button>
+                <button class="btn btn-p btn-sm" onclick="nav('scanner')">🔍 New Scan</button>
+              </div>
+            </div>
+            <!-- KPI stat cards -->
+            <div class="g4" id="dash-stats" style="margin-bottom:16px"></div>
+            <!-- Risk score + donut + activity row -->
+            <div class="dash-top-grid" style="display:grid;grid-template-columns:220px 1fr 1fr;gap:14px;margin-bottom:16px">
+              <!-- Risk score gauge -->
+              <div class="card"
+                style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:20px 14px">
+                <div
+                  style="font-size:11px;color:var(--text3);font-weight:700;text-transform:uppercase;letter-spacing:.06em">
+                  Risk Score</div>
+                <div style="position:relative;width:110px;height:110px">
+                  <canvas id="risk-gauge" width="110" height="110"></canvas>
+                  <div
+                    style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center">
+                    <div id="risk-score-val" style="font-size:28px;font-weight:900;line-height:1">—</div>
+                    <div style="font-size:10px;color:var(--text3)">/100</div>
+                  </div>
+                </div>
+                <div id="risk-label" style="font-size:12px;font-weight:700;padding:2px 12px;border-radius:20px">—</div>
+                <div id="risk-detail" style="font-size:11px;color:var(--text3);text-align:center;line-height:1.4"></div>
+              </div>
+              <!-- Severity donut chart -->
+              <div class="card">
+                <div class="ch" style="margin-bottom:10px">
+                  <div>
+                    <div class="ct">Severity Breakdown</div>
+                    <div class="csub">All vulnerabilities by severity</div>
+                  </div>
+                </div>
+                <div style="display:flex;align-items:center;gap:18px">
+                  <div style="position:relative;width:100px;height:100px;flex-shrink:0">
+                    <canvas id="sev-donut" width="100" height="100"></canvas>
+                    <div
+                      style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center">
+                      <div id="donut-total" style="font-size:20px;font-weight:800"></div>
+                      <div style="font-size:9px;color:var(--text3)">total</div>
+                    </div>
+                  </div>
+                  <div id="dash-sev" style="flex:1"></div>
+                </div>
+              </div>
+              <!-- Recent activity feed -->
+              <div class="card" style="overflow:hidden">
+                <div class="ch" style="margin-bottom:10px">
+                  <div>
+                    <div class="ct">Activity Feed</div>
+                    <div class="csub">Latest events</div>
+                  </div>
+                </div>
+                <div id="dash-activity" style="max-height:140px;overflow-y:auto"></div>
+              </div>
+            </div>
+            <!-- Bottom row: recent scans + top vulns -->
+            <div class="g2">
+              <div class="card">
+                <div class="ch">
+                  <div>
+                    <div class="ct">Recent Scans</div>
+                    <div class="csub">Latest vulnerability scans</div>
+                  </div><button class="btn btn-p btn-sm" onclick="nav('scanner')">+ New Scan</button>
+                </div>
+                <div id="dash-scans"></div>
+              </div>
+              <div class="card">
+                <div class="ch">
+                  <div>
+                    <div class="ct">Top Findings</div>
+                    <div class="csub">Critical &amp; high priority issues</div>
+                  </div><button class="btn btn-g btn-sm" onclick="currentScanId=null;nav('vulns')">View All →</button>
+                </div>
+                <div id="dash-top-vulns"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- PROJECTS -->
+          <div class="page" id="page-projects">
+            <div id="pview">
+              <div class="ch">
+                <div>
+                  <div class="pg-title">&#x1F4C1; Projects</div>
+                  <div class="pg-sub" style="margin-bottom:0">Manage your pentest projects</div>
+                </div><button class="btn btn-p" onclick="openPM()">+ New Project</button>
+              </div>
+              <div id="proj-list"></div>
+            </div>
+          </div>
+
+          <!-- SCANNER -->
+          <div class="page" id="page-scanner">
+            <div class="pg-title">&#x1F50D; Vulnerability Scanner</div>
+            <div class="pg-sub">Active web application security testing powered by the Flask backend engine</div>
+            <div class="g2">
+              <div>
+                <div class="card">
+                <div class="ch">
+                  <div>
+                    <div class="ct">Target Configuration</div>
+                    <div class="csub">Set your target URL and scan options</div>
+                  </div>
+                </div>
+                <div class="fg"><label>Target URL</label><input class="fi" id="surl" placeholder="https://target.example.com" type="url"></div>
+                <div class="fg"><label>Project</label>
+                  <select class="fi" id="scan-project-sel">
+                    <option value="">— Select a project (optional) —</option>
+                  </select>
+                </div>
+                <!-- Auth configuration -->
+                <details style="margin-bottom:10px">
+                  <summary style="cursor:pointer;font-size:12.5px;color:var(--text2);padding:8px 0;user-select:none">🔑 Authentication (optional)</summary>
+                  <div style="padding:10px 0 4px;display:flex;flex-direction:column;gap:10px">
+                    <div class="fg" style="margin-bottom:0"><label style="font-size:11px">Auth Mode</label>
+                      <select class="fi" id="scan-auth-mode" onchange="onScanAuthModeChange()">
+                        <option value="none">None</option>
+                        <option value="cookie">Cookie Header</option>
+                        <option value="bearer">Bearer Token</option>
+                      </select>
+                    </div>
+                    <div id="scan-auth-extra" style="display:none">
+                      <div class="fg" style="margin-bottom:0"><label style="font-size:11px" id="scan-auth-label">Value</label><input class="fi" id="scan-auth-value" placeholder=""></div>
+                    </div>
+                  </div>
+                </details>
+                <div style="display:flex;gap:8px;margin-top:8px">
+                  <button class="btn btn-p" style="flex:1;justify-content:center;padding:11px" onclick="startRealScan()" id="scan-btn">&#x1F680; Start Scan</button>
+                  <button class="btn btn-g" style="padding:11px" onclick="openScheduleModal()">📅 Schedule</button>
+                  <button class="btn btn-d" style="display:none;padding:11px 18px" id="cancel-scan-btn" onclick="cancelCurrentScan()">&#x23F9; Cancel</button>
+                </div>
+              </div>
+              <!-- Active Schedules Card -->
+              <div class="card" style="margin-top:14px">
+                <div class="ch" style="margin-bottom:10px">
+                  <div>
+                    <div class="ct">Active Schedules</div>
+                    <div class="csub">Recurring security assessments</div>
+                  </div>
+                </div>
+                <div id="schedules-list" style="max-height:220px;overflow-y:auto;font-size:12.5px">
+                  <div class="ph">No active scheduled scans.</div>
+                </div>
+              </div>
+            </div>
+            <div class="card" id="scan-status-card">
+                <div class="ct" style="margin-bottom:14px">Scan Status</div>
+                <div id="scan-log"
+                  style="font-family:var(--mono);font-size:12px;color:var(--text2);min-height:200px;max-height:350px;overflow-y:auto">
+                  <div class="ph">&#x1F6A6; Configure target and launch scan to begin</div>
+                </div>
+                <div id="scan-prog-wrap" style="display:none">
+                  <div
+                    style="display:flex;justify-content:space-between;font-size:11.5px;color:var(--text3);margin-top:8px">
+                    <span id="scan-phase">Ready</span><span id="scan-pct">0%</span>
+                  </div>
+                  <div class="prog-wrap">
+                    <div class="prog-bar" id="scan-prog-bar"></div>
+                  </div>
+                </div>
+                <div id="scan-results" style="margin-top:14px"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- VULNERABILITIES -->
+          <div class="page" id="page-vulns">
+            <div class="ch" style="margin-bottom:14px">
+              <div>
+                <div class="pg-title">⚠️ Vulnerabilities</div>
+                <div class="pg-sub" style="margin-bottom:0">Click any row to see attack details, payloads &amp;
+                  remediation</div>
+              </div>
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                <select class="fi" id="vuln-filter" onchange="renderVulns()"
+                  style="width:auto;padding:5px 10px;font-size:12px">
+                  <option value="">All Severities</option>
+                  <option value="critical">Critical</option>
+                  <option value="high">High</option>
+                  <option value="medium">Medium</option>
+                  <option value="low">Low</option>
+                  <option value="info">Info</option>
+                </select>
+                <input class="fi" id="vuln-search" placeholder="🔎 Search..." oninput="renderVulns()"
+                  style="width:160px;padding:5px 10px;font-size:12px">
+                <button class="btn btn-g btn-sm" onclick="showVulnExportMenu()">⬇️ Export</button>
+              </div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 420px;gap:14px;align-items:start" id="vulns-layout">
+              <div class="card" style="min-height:200px">
+                <div id="vuln-scan-banner" style="display:none"></div>
+                <div id="vuln-table"></div>
+              </div>
+              <div id="vuln-detail-panel" style="display:none"></div>
+            </div>
+          </div>
+
+          <!-- REPORTS -->
+          <div class="page" id="page-reports">
+            <div
+              style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:20px">
+              <div>
+                <div class="pg-title">📋 Reports</div>
+                <div class="pg-sub" style="margin-bottom:0">Export professional vulnerability reports in multiple
+                  formats</div>
+              </div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap">
+                <button class="btn btn-p btn-sm" onclick="exportAllHTML()">📄 Full HTML Report</button>
+                <button class="btn btn-g btn-sm" onclick="exportAllCSV()">📊 All CSV</button>
+                <button class="btn btn-g btn-sm" onclick="exportJSONReport(null)">{ } All JSON</button>
+                <button class="btn btn-g btn-sm" onclick="printReport()">🖨️ Print / PDF</button>
+              </div>
+            </div>
+            <!-- Quick export bar -->
+            <div id="report-quick-bar" style="display:none;margin-bottom:16px"></div>
+            <!-- Compare / Diff Scans tool -->
+            <div class="card" style="margin-bottom:14px;background:rgba(255,255,255,.02);border:1px solid var(--border)">
+              <div style="font-size:13px;font-weight:800;margin-bottom:10px;display:flex;align-items:center;gap:6px">🔄 Compare / Diff Scans</div>
+              <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+                <div class="fg" style="margin-bottom:0;flex:1;min-width:180px">
+                  <label style="font-size:11px">Base Scan (Previous)</label>
+                  <select class="fi" id="diff-scan-a" style="padding:8px 10px;font-size:12.5px"></select>
+                </div>
+                <div class="fg" style="margin-bottom:0;flex:1;min-width:180px">
+                  <label style="font-size:11px">Compare Scan (Current)</label>
+                  <select class="fi" id="diff-scan-b" style="padding:8px 10px;font-size:12.5px"></select>
+                </div>
+                <button class="btn btn-p" style="padding:9px 16px" onclick="compareScans()">Compare</button>
+              </div>
+              <div id="diff-results" style="display:none;margin-top:14px;border-top:1px solid var(--border);padding-top:14px"></div>
+            </div>
+            <!-- Scan cards -->
+            <div id="report-list"></div>
+          </div>
+
+          <!-- TOOLS -->
+          <div class="page" id="page-tools">
+            <div class="pg-title">&#x1F9F0; Security Tools</div>
+            <div class="pg-sub">Built-in utilities for offensive security research</div>
+            <div class="g2" style="margin-bottom:16px">
+              <div class="tool-card">
+                <div class="tool-ico">&#x1F50E;</div>
+                <div class="tool-ttl">CVE Lookup</div>
+                <div class="tool-sub">Real CVE details & CVSS scores via OSV.dev + Red Hat Security Data (browser-CORS friendly)</div>
+                <div class="tool-row"><input class="fi" id="cve-input" placeholder="CVE-2021-44228 or keyword..."
+                    onkeydown="if(event.key==='Enter')cveLookup()"><button class="btn btn-p btn-sm"
+                    onclick="cveLookup()">&#x1F50D; Search</button></div>
+                <div id="cve-result" class="ip-result"></div>
+              </div>
+              <div class="tool-card">
+                <div class="tool-ico">&#x1F310;</div>
+                <div class="tool-ttl">IP Reputation</div>
+                <div class="tool-sub">Check IP geolocation, ISP, ASN, VPN/proxy detection (auto-fallback across 3 APIs)
+                </div>
+                <div class="tool-row"><input class="fi" id="ip-input" placeholder="8.8.8.8 or IPv6..."
+                    onkeydown="if(event.key==='Enter')ipRepCheck()"><button class="btn btn-p btn-sm"
+                    onclick="ipRepCheck()">&#x1F4E1; Check</button></div>
+                <div style="margin-top:4px"><button class="btn btn-g btn-xs" onclick="lookupMyIP()"
+                    style="font-size:11px">🌐 My IP</button></div>
+                <div id="ip-result" class="ip-result"></div>
+              </div>
+            </div>
+            <div class="g2" style="margin-bottom:16px">
+              <div class="tool-card">
+                <div class="tool-ico">🌐</div>
+                <div class="tool-ttl">DNS Lookup</div>
+                <div class="tool-sub">Resolve DNS records (A, AAAA, MX, TXT, NS) using Cloudflare DNS-over-HTTPS</div>
+                <div class="tool-row">
+                  <input class="fi" id="dns-input" placeholder="example.com"
+                    onkeydown="if(event.key==='Enter')dnsLookup()">
+                  <select class="fi" id="dns-type" style="width:90px;flex:none">
+                    <option value="A">A</option>
+                    <option value="AAAA">AAAA</option>
+                    <option value="MX">MX</option>
+                    <option value="TXT">TXT</option>
+                    <option value="NS">NS</option>
+                    <option value="CNAME">CNAME</option>
+                  </select>
+                  <button class="btn btn-p btn-sm" onclick="dnsLookup()">🔍 Lookup</button>
+                </div>
+                <div id="dns-result" class="ip-result"></div>
+              </div>
+              <div class="tool-card">
+                <div class="tool-ico">🔒</div>
+                <div class="tool-ttl">SSL/TLS Checker</div>
+                <div class="tool-sub">Inspect SSL certificate details, expiry, issuer and chain via crt.sh transparency
+                  logs</div>
+                <div class="tool-row">
+                  <input class="fi" id="ssl-input" placeholder="example.com"
+                    onkeydown="if(event.key==='Enter')sslCheck()">
+                  <button class="btn btn-p btn-sm" onclick="sslCheck()">🔒 Check SSL</button>
+                </div>
+                <div id="ssl-result" class="ip-result"></div>
+              </div>
+            </div>
+            <div class="g2">
+              <div class="tool-card">
+                <div class="tool-ico">&#x1F512;</div>
+                <div class="tool-ttl">Password Strength</div>
+                <div class="tool-sub">Analyze strength, entropy, and check HaveIBeenPwned breach database</div>
+                <input class="fi" id="pw-input" type="password" placeholder="Type a password to analyze..."
+                  oninput="checkPw(this.value)" style="margin-bottom:8px">
+                <div class="pw-bars">
+                  <div class="pw-bar"></div>
+                  <div class="pw-bar"></div>
+                  <div class="pw-bar"></div>
+                  <div class="pw-bar"></div>
+                  <div class="pw-bar"></div>
+                </div>
+                <div class="pw-lbl" id="pw-lbl">Enter a password above</div>
+                <div id="pw-details"></div>
+                <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                  <button class="btn btn-g btn-sm" onclick="hibpCheck()" id="hibp-btn" style="font-size:11.5px">🔎 Check
+                    Data Breaches (HIBP)</button>
+                  <span style="font-size:10.5px;color:var(--text3)">k-anonymity — password never sent</span>
+                </div>
+                <div id="pw-hibp" style="margin-top:8px"></div>
+              </div>
+              <div class="tool-card">
+                <div class="tool-ico">&#x26A1;</div>
+                <div class="tool-ttl">Hash Generator</div>
+                <div class="tool-sub">Generate SHA-1, SHA-256, SHA-384, SHA-512 hashes using Web Crypto API</div>
+                <div class="fg"><label>Input Text</label><textarea class="fi" id="hash-input" rows="3"
+                    placeholder="Enter text to hash..."></textarea></div>
+                <button class="btn btn-p btn-sm" onclick="genHash()">&#x26A1; Generate Hashes</button>
+                <div id="hash-result" style="margin-top:10px;display:none"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- NOTES -->
+          <div class="page" id="page-notes">
+            <div class="ch">
+              <div>
+                <div class="pg-title">&#x1F4DD; Pentest Notes</div>
+                <div class="pg-sub" style="margin-bottom:0">Persistent journal stored in browser localStorage</div>
+              </div><button class="btn btn-p" onclick="openNoteModal()">+ Add Note</button>
+            </div>
+            <div id="notes-list"></div>
+          </div>
+
+          <!-- SETTINGS -->
+          <div class="page" id="page-settings">
+            <div class="pg-title">&#x2699;&#xFE0F; Settings</div>
+            <div class="pg-sub">Application preferences and configuration</div>
+            <div class="g2">
+              <div class="card">
+                <div class="ct" style="margin-bottom:16px">&#x1F3A8; Appearance</div>
+                <div class="fg"><label>Application Theme</label>
+                  <select class="fi" id="theme-sel" onchange="setTheme(this.value);toast('Theme changed!','success')">
+                    <option value="cyber">🌈 Aurora Glass (Default)</option>
+                    <option value="midnight">🌌 Midnight Blue</option>
+                    <option value="dark">🌃 Dark Steel</option>
+                    <option value="neon">⚡ Neon Violet</option>
+                    <option value="matrix">🟢 Matrix Green</option>
+                    <option value="sunset">🌅 Sunset Luxe</option>
+                    <option value="light">☀️ Light Mode</option>
+                  </select>
+                </div>
+                <div class="tog-row">
+                  <div>
+                    <div style="font-size:13px;font-weight:600">Auto-generate PDF Report</div>
+                    <div style="font-size:11.5px;color:var(--text3)">Create PDF after every scan</div>
+                  </div>
+                  <div class="tog" id="tog-pdf" onclick="this.classList.toggle('on')"></div>
+                </div>
+                <div class="tog-row">
+                  <div>
+                    <div style="font-size:13px;font-weight:600">Browser Notifications</div>
+                    <div style="font-size:11.5px;color:var(--text3)">Desktop push notifications</div>
+                  </div>
+                  <div class="tog on" id="tog-notif" onclick="this.classList.toggle('on')"></div>
+                </div>
+                <button class="btn btn-p" style="margin-top:16px" onclick="toast('Settings saved!','success')">Save
+                  Changes</button>
+              </div>
+              <div class="card">
+                <div class="ct" style="margin-bottom:16px">&#x1F464; Account</div>
+                <div class="fg"><label>Username</label><input class="fi" id="un-edit" placeholder="Username"></div>
+                <div class="fg"><label>Email</label><input class="fi" type="email" placeholder="you@company.com"></div>
+                <div class="fg"><label>New Password</label><input class="fi" type="password"
+                    placeholder="Leave blank to keep current"></div>
+                <button class="btn btn-p" onclick="toast('Account updated!','success')">Update Account</button>
+                <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
+                  <button class="btn btn-d" onclick="doLogout()">&#x1F6AA; Sign Out</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- ADMIN PANEL -->
+          <div class="page" id="page-admin">
+            <div class="pg-title">🛡️ Admin Panel</div>
+            <div class="pg-sub">Manage system users, view real-time security events, and inspect system configurations.</div>
+            
+            <div class="admin-grid">
+              
+              <!-- LEFT COLUMN: User Management -->
+              <div class="card" style="display: flex; flex-direction: column; min-height: 500px;">
+                <div class="ct" style="margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center;">
+                  <span>👥 User Management</span>
+                  <div style="display: flex; gap: 8px;">
+                    <button class="btn btn-p btn-xs" onclick="openAdminCreateUserModal()">➕ Add User</button>
+                    <button class="btn btn-g btn-xs" onclick="fetchAdminUsers(this)">🔄 Refresh</button>
+                  </div>
+                </div>
+                <div style="overflow-x: auto; flex: 1;">
+                  <table class="tbl" id="admin-users-table">
+                    <thead>
+                      <tr>
+                        <th>User</th>
+                        <th>Email</th>
+                        <th>Role</th>
+                        <th>Status</th>
+                        <th style="text-align: right;">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody id="admin-users-list">
+                      <!-- Dynamically filled -->
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <!-- RIGHT COLUMN: System Config & Live Audit Log -->
+              <div style="display: flex; flex-direction: column; gap: 14px;">
+                
+                <!-- System Config Card -->
+                <div class="card">
+                  <div class="ct" style="margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;">
+                    <span>⚙️ Security Configurations</span>
+                    <button class="btn btn-g btn-sm" onclick="fetchAdminConfig(this)">🔄 Refresh</button>
+                  </div>
+                  <div style="display: flex; flex-direction: column; gap: 12px; font-size: 13px;" id="admin-config-list">
+                    <!-- Dynamically filled -->
+                  </div>
+                  <div style="margin-top: 12px; text-align: right;">
+                    <button class="btn btn-p btn-sm" onclick="saveAdminConfig()">💾 Save Configurations</button>
+                  </div>
+                </div>
+
+                <!-- Live Audit Log Card -->
+                <div class="card" style="display: flex; flex-direction: column; height: 380px;">
+                  <div class="ct" style="margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
+                    <span>🚨 Live Security Audit Feed</span>
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                      <span class="pulse-indicator"></span>
+                      <button class="btn btn-g btn-sm" onclick="fetchAdminLogs(this)">🔄 Refresh</button>
+                    </div>
+                  </div>
+                  
+                  <!-- Filter tabs -->
+                  <div style="display: flex; gap: 4px; overflow-x: auto; padding-bottom: 8px; border-bottom: 1px solid var(--border); margin-bottom: 8px;">
+                    <button class="btn btn-g btn-xs on" id="log-filter-all" onclick="filterAdminLogs('all')">All</button>
+                    <button class="btn btn-g btn-xs" id="log-filter-logins" onclick="filterAdminLogs('logins')">Logins</button>
+                    <button class="btn btn-g btn-xs" id="log-filter-sec" onclick="filterAdminLogs('sec')">Security</button>
+                    <button class="btn btn-g btn-xs" id="log-filter-scans" onclick="filterAdminLogs('scans')">Scans</button>
+                  </div>
+
+                  <div style="overflow-y: auto; flex: 1; font-family: var(--mono); font-size: 11px; padding: 8px; background: rgba(0,0,0,0.25); border-radius: 8px; border: 1px solid var(--border);" id="admin-logs-list">
+                    <!-- Dynamically filled -->
+                  </div>
+                </div>
+
+              </div>
+
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ADMIN CREATE USER MODAL -->
+  <div class="mover" id="admin-create-user-modal" style="display:none">
+    <div class="modal" style="width:400px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">
+        <div style="font-size:16px;font-weight:800">👤 Add New User</div>
+        <button class="btn btn-g" onclick="closeAdminCreateUserModal()">✕</button>
+      </div>
+      <div style="display:grid;gap:12px" id="admin-create-user-form">
+        <div class="fg">
+          <label>Username</label>
+          <input type="text" class="fi" id="ac-username" placeholder="Username (letters/numbers)">
+          <div class="err-hint" id="err-ac-username" style="display:none;color:var(--red);font-size:11px;margin-top:4px"></div>
+        </div>
+        <div class="fg">
+          <label>Display Name</label>
+          <input type="text" class="fi" id="ac-name" placeholder="John Doe">
+          <div class="err-hint" id="err-ac-name" style="display:none;color:var(--red);font-size:11px;margin-top:4px"></div>
+        </div>
+        <div class="fg">
+          <label>Email Address</label>
+          <input type="email" class="fi" id="ac-email" placeholder="user@example.com">
+          <div class="err-hint" id="err-ac-email" style="display:none;color:var(--red);font-size:11px;margin-top:4px"></div>
+        </div>
+        <div class="fg">
+          <label>Password</label>
+          <input type="password" class="fi" id="ac-password" placeholder="Min 8 chars, 1 digit">
+          <div class="err-hint" id="err-ac-password" style="display:none;color:var(--red);font-size:11px;margin-top:4px"></div>
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
+          <button class="btn btn-g" onclick="closeAdminCreateUserModal()">Cancel</button>
+          <button class="btn btn-p" onclick="saveAdminCreateUser()">➕ Create Account</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SECURITY ALERT / ERROR MODAL -->
+  <div class="mover" id="error-popup-modal" style="display:none">
+    <div class="modal" style="width:400px;border-color:rgba(251,94,126,.4);">
+      <div style="text-align:center;margin-bottom:14px">
+        <div style="font-size:42px;margin-bottom:8px">⚠️</div>
+        <div style="font-size:18px;font-weight:800;color:#ffb3c1" id="error-popup-title">Security Alert</div>
+      </div>
+      <div style="font-size:13.5px;color:var(--text2);text-align:center;margin-bottom:20px;line-height:1.5" id="error-popup-message">
+        Something went wrong.
+      </div>
+      <div style="display:flex;justify-content:center;gap:12px">
+        <button class="btn btn-p" style="padding:10px 24px;font-size:13px" onclick="document.getElementById('error-popup-modal').style.display='none'">Dismiss</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- VULN EXPORT MODAL -->
+  <div class="mover" id="vuln-export-modal">
+    <div class="modal" style="width:380px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">
+        <div style="font-size:16px;font-weight:800">⬇️ Export Vulnerabilities</div>
+        <button class="btn btn-g" onclick="document.getElementById('vuln-export-modal').style.display='none'">✕</button>
+      </div>
+      <div style="display:grid;gap:10px">
+        <button class="btn btn-p" style="justify-content:flex-start;gap:12px;padding:14px 16px"
+          onclick="document.getElementById('vuln-export-modal').style.display='none';exportHTML(null)">
+          <span style="font-size:22px">📄</span>
+          <div style="text-align:left">
+            <div style="font-weight:700">HTML Report</div>
+            <div style="font-size:11.5px;opacity:.7;font-weight:400">Full styled report with all vuln details</div>
+          </div>
+        </button>
+        <button class="btn btn-g" style="justify-content:flex-start;gap:12px;padding:14px 16px"
+          onclick="document.getElementById('vuln-export-modal').style.display='none';exportAllCSV()">
+          <span style="font-size:22px">📊</span>
+          <div style="text-align:left">
+            <div style="font-weight:700">CSV Spreadsheet</div>
+            <div style="font-size:11.5px;opacity:.7;font-weight:400">Import into Excel, Google Sheets or JIRA</div>
+          </div>
+        </button>
+        <button class="btn btn-g" style="justify-content:flex-start;gap:12px;padding:14px 16px"
+          onclick="document.getElementById('vuln-export-modal').style.display='none';exportJSONReport(null)">
+          <span style="font-size:22px">{ }</span>
+          <div style="text-align:left">
+            <div style="font-weight:700">JSON Export</div>
+            <div style="font-size:11.5px;opacity:.7;font-weight:400">Machine-readable data for pipelines &amp; APIs
+            </div>
+          </div>
+        </button>
+        <button class="btn btn-g" style="justify-content:flex-start;gap:12px;padding:14px 16px"
+          onclick="document.getElementById('vuln-export-modal').style.display='none';printReport()">
+          <span style="font-size:22px">🖨️</span>
+          <div style="text-align:left">
+            <div style="font-weight:700">Print / Save as PDF</div>
+            <div style="font-size:11.5px;opacity:.7;font-weight:400">Opens print dialog — choose "Save as PDF"</div>
+          </div>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- PROFILE MODAL -->
+  <div class="mover" id="profile-modal">
+    <div class="modal" style="width:480px">
+      <div style="display:flex;align-items:center;gap:14px;margin-bottom:22px">
+        <div class="ua" id="pm-avatar" style="width:52px;height:52px;font-size:20px;flex-shrink:0">A</div>
+        <div>
+          <div style="font-size:17px;font-weight:800" id="pm-name">Admin</div>
+          <div style="font-size:12px;color:var(--text3)" id="pm-role">Administrator</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:2px" id="pm-email">admin@vulnscan.local</div>
+        </div>
+        <button class="btn btn-g" style="margin-left:auto;align-self:flex-start"
+          onclick="closeProfileModal()">✕</button>
+      </div>
+      <div style="border-top:1px solid var(--border);padding-top:16px;margin-bottom:16px">
+        <div class="fg"><label>Display Name</label><input class="fi" id="pm-name-input" placeholder="Your name"></div>
+        <div class="fg"><label>Email</label><input class="fi" id="pm-email-input" type="email"
+            placeholder="you@company.com"></div>
+        <div class="fg"><label>New Password</label><input class="fi" id="pm-pw-input" type="password"
+            placeholder="Leave blank to keep current"></div>
+        <div class="fg"><label>Confirm Password</label><input class="fi" id="pm-pw2-input" type="password"
+            placeholder="Repeat new password"></div>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:space-between;align-items:center">
+        <button class="btn btn-d" onclick="doLogout()">🚪 Sign Out</button>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-g" onclick="closeProfileModal()">Cancel</button>
+          <button class="btn btn-p" onclick="saveProfile()">💾 Save Changes</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PROJECT MODAL -->
+  <div class="mover" id="pmodal">
+    <div class="modal">
+      <div class="mtitle">&#x1F4C1; New Project</div>
+      <div class="fg"><label>Project Name *</label><input class="fi" id="pname"
+          placeholder="e.g. WebApp Pentest Q2 2025"></div>
+      <div class="fg"><label>Description</label><textarea class="fi" id="pdesc" rows="3"
+          placeholder="Scope, objectives, client info..."></textarea></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn btn-g" onclick="closePM()">Cancel</button>
+        <button class="btn btn-p" onclick="createP()">&#x2714; Create Project</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ADD TARGET MODAL -->
+  <div class="mover" id="at-modal">
+    <div class="modal">
+      <div class="mtitle">&#x1F3AF; Add Target</div>
+      <div class="fg"><label>Target Name *</label><input class="fi" id="at-name" placeholder="e.g. Main Store, API v2">
+      </div>
+      <div class="fg"><label>Target URL *</label><input class="fi" id="at-url" placeholder="https://target.example.com"
+          type="url"></div>
+      <div class="fg"><label>Description</label><input class="fi" id="at-desc" placeholder="Brief description"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn btn-g" onclick="closeAddTarget()">Cancel</button>
+        <button class="btn btn-p" onclick="saveTarget()">&#x2714; Add Target</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- SCHEDULE MODAL -->
+  <div class="mover" id="schedule-modal" style="display:none">
+    <div class="modal">
+      <div class="mtitle">📅 Schedule Scan</div>
+      <div style="font-size:12.5px;color:var(--text3);margin-bottom:14px;line-height:1.5">Set up a recurring vulnerability scan for this target URL.</div>
+      <div class="fg">
+        <label>Target URL</label>
+        <input class="fi" id="sched-url" type="url" disabled>
+      </div>
+      <div class="fg">
+        <label>Scan Interval</label>
+        <select class="fi" id="sched-interval" onchange="onSchedIntervalChange()">
+          <option value="0 0 * * *">Daily (Midnight)</option>
+          <option value="0 0 * * 0">Weekly (Sunday Midnight)</option>
+          <option value="0 * * * *">Hourly</option>
+          <option value="custom">Custom Cron Expression</option>
+        </select>
+      </div>
+      <div class="fg" id="sched-cron-container" style="display:none">
+        <label>Custom Cron Expression</label>
+        <input class="fi" id="sched-cron" placeholder="*/30 * * * *" value="0 0 * * *">
+        <div style="font-size:10px;color:var(--text3);margin-top:4px">Format: minute hour day-of-month month day-of-week</div>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+        <button class="btn btn-g" onclick="closeScheduleModal()">Cancel</button>
+        <button class="btn btn-p" onclick="saveSchedule()">Save Schedule</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- NOTE MODAL -->
+  <div class="mover" id="note-modal">
+    <div class="modal">
+      <div class="mtitle">&#x1F4DD; Add Note</div>
+      <div class="fg"><label>Title *</label><input class="fi" id="note-title" placeholder="Note title..."></div>
+      <div class="fg"><label>Content *</label><textarea class="fi" id="note-body" rows="5"
+          placeholder="Write your pentest notes here..."></textarea></div>
+      <div class="fg"><label>Tag</label><input class="fi" id="note-tag" placeholder="e.g. recon, xss, sqli"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn btn-g" onclick="closeNoteModal()">Cancel</button>
+        <button class="btn btn-p" onclick="saveNote()">&#x2714; Save Note</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="static/app.js"></script>
+</body>
+
+</html>

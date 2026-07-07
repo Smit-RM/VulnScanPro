@@ -1,0 +1,5 @@
+# Development / CI-only tooling (not needed to run the app).
+#   pip install -r requirements-dev.txt
+pytest          # test runner (see test_security_features.py)
+pip-audit       # dependency vulnerability (CVE) scanner
+bandit          # static security linter

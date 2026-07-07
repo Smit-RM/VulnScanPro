@@ -1,0 +1,41 @@
+# ── Secrets / local config ──────────────────────────────────────────
+# NEVER commit the real .env. Commit .env.example (placeholders) instead.
+.env
+.env.*
+!.env.example
+
+# ── Database (contains user data & password hashes) ─────────────────
+instance/*.db
+instance/*.sqlite
+instance/*.sqlite3
+*.db
+
+# ── Python ──────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── Virtual environments ────────────────────────────────────────────
+venv/
+env/
+.venv/
+
+# ── Node / frontend tooling ─────────────────────────────────────────
+node_modules/
+
+# ── Playwright (end-to-end tests) ───────────────────────────────────
+test-results/
+playwright-report/
+.playwright/
+
+# ── Security tooling reports ────────────────────────────────────────
+bandit-report.*
+pip-audit-report.*
+
+# ── OS / editor cruft ───────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp

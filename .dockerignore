@@ -1,0 +1,22 @@
+# Keep the image lean and — critically — keep secrets and local state OUT of it.
+.env
+.env.*
+!.env.example
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+instance/
+*.db
+*.sqlite
+*.sqlite3
+.git/
+.github/
+tests/e2e/
+node_modules/
+test-results/
+playwright-report/
+VulnScanPro_Presentation.pptx
