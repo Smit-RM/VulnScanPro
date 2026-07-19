@@ -594,14 +594,30 @@
     }
 
     /* ---- VULN DETAIL PANEL ---- */
+    #vuln-detail-panel {
+      position: sticky;
+      top: 0;
+      max-height: calc(100vh - 120px);
+      overflow-y: auto;
+      border-radius: 14px;
+    }
+
+    #vuln-detail-panel::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    #vuln-table {
+      overflow-x: auto;
+      width: 100%;
+    }
+
     .vd-panel {
       background: var(--panel);
       border: 1px solid var(--border);
       border-radius: 14px;
       padding: 20px;
-      position: sticky;
-      top: 0
     }
+
 
     .vd-header {
       display: flex;
@@ -2122,3 +2138,7 @@
         grid-template-columns: 1fr !important
       }
     }
+
+    #scan-log:empty {
+      display: none !important;
+    }

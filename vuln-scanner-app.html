@@ -126,7 +126,7 @@
               class="si-lbl sb-lbl">Projects</span></div>
           <div class="si" id="si-scanner" data-tip="Scanner" onclick="nav('scanner')"><span class="si-ico">&#x1F50D;</span><span
               class="si-lbl sb-lbl">Scanner</span></div>
-          <div class="si" id="si-vulns" data-tip="Vulnerabilities" onclick="currentScanId=null;nav('vulns')"><span
+          <div class="si" id="si-vulns" data-tip="Vulnerabilities" onclick="clearScanFilter();nav('vulns')"><span
               class="si-ico">&#x26A0;&#xFE0F;</span><span class="si-lbl sb-lbl">Vulnerabilities</span></div>
           <div class="si" id="si-reports" data-tip="Reports" onclick="nav('reports')"><span class="si-ico">&#x1F4CB;</span><span
               class="si-lbl sb-lbl">Reports</span></div>
@@ -286,6 +286,13 @@
                   </div>
                 </div>
                 <div class="fg"><label>Target URL</label><input class="fi" id="surl" placeholder="https://target.example.com" type="url"></div>
+                <div class="fg"><label>Scan Engine</label>
+                  <select class="fi" id="scan-engine-sel" onchange="onScanEngineChange()">
+                    <option value="native">Built-in Light Scanner</option>
+                    <option value="zap">OWASP ZAP Advanced Scanner</option>
+                  </select>
+                  <div id="zap-health-status" style="font-size: 11px; margin-top: 4px; display: none;"></div>
+                </div>
                 <div class="fg"><label>Project</label>
                   <select class="fi" id="scan-project-sel">
                     <option value="">— Select a project (optional) —</option>
@@ -325,26 +332,41 @@
                   <div class="ph">No active scheduled scans.</div>
                 </div>
               </div>
-            </div>
-            <div class="card" id="scan-status-card">
-                <div class="ct" style="margin-bottom:14px">Scan Status</div>
-                <div id="scan-log"
-                  style="font-family:var(--mono);font-size:12px;color:var(--text2);min-height:200px;max-height:350px;overflow-y:auto">
-                  <div class="ph">&#x1F6A6; Configure target and launch scan to begin</div>
+            <!-- Scan History Card -->
+            <div class="card" style="margin-top:14px" id="scan-history-card">
+              <div class="ch" style="margin-bottom:12px">
+                <div>
+                  <div class="ct">📋 Scan History</div>
+                  <div class="csub">Past scans — click <em>View Results</em> to see findings</div>
                 </div>
-                <div id="scan-prog-wrap" style="display:none">
-                  <div
-                    style="display:flex;justify-content:space-between;font-size:11.5px;color:var(--text3);margin-top:8px">
-                    <span id="scan-phase">Ready</span><span id="scan-pct">0%</span>
-                  </div>
-                  <div class="prog-wrap">
-                    <div class="prog-bar" id="scan-prog-bar"></div>
-                  </div>
-                </div>
-                <div id="scan-results" style="margin-top:14px"></div>
+                <button class="btn btn-g btn-sm" onclick="loadScanHistory()" title="Refresh">↺ Refresh</button>
+              </div>
+              <div id="scan-history-list" style="max-height:340px;overflow-y:auto">
+                <div class="ph">Loading scan history…</div>
               </div>
             </div>
           </div>
+          <div class="card" id="scan-status-card">
+              <div class="ct" style="margin-bottom:14px">Scan Status</div>
+              <div id="scan-log"
+                style="font-family:var(--mono);font-size:12px;color:var(--text2);min-height:200px;max-height:350px;overflow-y:auto">
+                <div class="ph">&#x1F6A6; Configure target and launch scan to begin</div>
+              </div>
+              <div id="scan-prog-wrap" style="display:none">
+                <div
+                  style="display:flex;justify-content:space-between;font-size:11.5px;color:var(--text3);margin-top:8px">
+                  <span id="scan-phase">Ready</span>
+                  <span id="scan-timer" style="display:none;color:var(--text3);font-family:var(--mono)">00:00</span>
+                  <span id="scan-pct">0%</span>
+                </div>
+                <div class="prog-wrap">
+                  <div class="prog-bar" id="scan-prog-bar"></div>
+                </div>
+              </div>
+              <div id="scan-results" style="margin-top:14px;max-height:360px;overflow-y:auto;padding-right:4px"></div>
+            </div>
+          </div>
+        </div>
 
           <!-- VULNERABILITIES -->
           <div class="page" id="page-vulns">
@@ -369,7 +391,7 @@
                 <button class="btn btn-g btn-sm" onclick="showVulnExportMenu()">⬇️ Export</button>
               </div>
             </div>
-            <div style="display:grid;grid-template-columns:1fr 420px;gap:14px;align-items:start" id="vulns-layout">
+            <div style="display:grid;grid-template-columns:1fr;gap:14px;align-items:start" id="vulns-layout">
               <div class="card" style="min-height:200px">
                 <div id="vuln-scan-banner" style="display:none"></div>
                 <div id="vuln-table"></div>

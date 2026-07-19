@@ -2,6 +2,24 @@
 Smart Web Application Vulnerability Scanner - Backend API
 Flask + SQLAlchemy + JWT + WebSockets
 """
+from flask_socketio import emit, join_room
+import zap_service
+from pydantic import BaseModel, field_validator, ValidationError
+import logging
+import html
+import re
+from bs4 import BeautifulSoup
+import requests
+from flask_bcrypt import Bcrypt
+from flask_socketio import SocketIO, emit, join_room
+from flask_sqlalchemy import SQLAlchemy
+from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
+from flask_cors import CORS
+from flask import Flask, request, jsonify, g
+from functools import wraps
+from datetime import datetime, timedelta
+from itsdangerous import URLSafeTimedSerializer
+from email.message import EmailMessage
 import os
 import json
 import time
@@ -14,22 +32,8 @@ import random
 import secrets
 import smtplib
 import eventlet
-from email.message import EmailMessage
-from itsdangerous import URLSafeTimedSerializer
-from datetime import datetime, timedelta
-from functools import wraps
-from flask import Flask, request, jsonify, g
-from flask_cors import CORS
-from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
-from flask_sqlalchemy import SQLAlchemy
-from flask_socketio import SocketIO, emit, join_room
-from flask_bcrypt import Bcrypt
-import requests
-from bs4 import BeautifulSoup
-import re
-import html
-import logging
-from pydantic import BaseModel, field_validator, ValidationError
+from dotenv import load_dotenv
+load_dotenv()
 
 # Configure logging
 # Try to load .env file manually from the app's directory before environment variables are read
@@ -194,7 +198,7 @@ _CSP_POLICY = (
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
     "font-src 'self' data: https://fonts.gstatic.com; "
     "img-src 'self' data:; "
-    "connect-src 'self'; "
+    "connect-src 'self' https://api.osv.dev https://access.redhat.com https://api.ipify.org https://api.my-ip.io https://ipapi.co https://free.freeipapi.com https://api.ip.sb https://api.pwnedpasswords.com https://cloudflare-dns.com https://api.certspotter.com; "
     "frame-ancestors 'none'; "
     "base-uri 'self'; "
     "form-action 'self'; "
@@ -295,6 +299,17 @@ SMTP_PASS = os.environ.get('SMTP_PASS')
 SMTP_FROM = os.environ.get('SMTP_FROM', 'no-reply@vulnscanner.local')
 SMTP_TLS = os.environ.get('SMTP_TLS', '1') != '0'
 APP_BASE_URL = os.environ.get('APP_BASE_URL', 'http://127.0.0.1:5000')
+
+# ─── ZAP Integration Configuration ───────────────────────────────────────────
+# ZAP_API_URL and ZAP_API_KEY are read by zap_service lazily at call time from
+# os.environ so they are NEVER hardcoded and NEVER exposed to browser clients.
+# Set both in Render environment variables (or .env for local dev).
+_ZAP_ENABLED = bool(os.environ.get('ZAP_API_URL'))
+if _ZAP_ENABLED:
+    logger.info('ZAP integration ENABLED — ZAP_API_URL is configured')
+else:
+    logger.info('ZAP integration DISABLED — ZAP_API_URL not set; '
+                'ZAP endpoints will return 503 until configured')
 
 # Require new users to verify their email before they can log in. Default ON; set
 # REQUIRE_EMAIL_VERIFICATION=0 to disable (e.g. local testing without SMTP).
@@ -881,6 +896,10 @@ class Scan(db.Model):
     config = db.Column(db.Text, default='{}')  # JSON scan configuration
     total_urls = db.Column(db.Integer, default=0)
     scanned_urls = db.Column(db.Integer, default=0)
+    # 'native' = VulnerabilityScanner engine; 'zap' = OWASP ZAP via Cloudflare tunnel
+    scan_engine = db.Column(db.String(20), default='native')
+    # Tracks the most recent ZAP spider or active-scan ID while the scan is running
+    zap_scan_id = db.Column(db.String(50))
     vulnerabilities = db.relationship(
         'Vulnerability', backref='scan', lazy=True, cascade='all, delete-orphan')
 
@@ -892,6 +911,8 @@ class Scan(db.Model):
             'completed_at': self.completed_at.isoformat() if self.completed_at else None,
             'config': json.loads(self.config), 'total_urls': self.total_urls,
             'scanned_urls': self.scanned_urls,
+            'scan_engine': self.scan_engine or 'native',
+            'zap_scan_id': self.zap_scan_id,
             'vuln_count': len(self.vulnerabilities),
             'severity_breakdown': self._severity_breakdown(),
             # Frontend compatibility mapping
@@ -927,6 +948,8 @@ class Vulnerability(db.Model):
     cvss_score = db.Column(db.Float, default=0.0)
     cwe_id = db.Column(db.String(20))
     discovered_at = db.Column(db.DateTime, default=datetime.utcnow)
+    # ZAP plugin ID stored for deduplication when importing alerts multiple times
+    zap_alert_id = db.Column(db.String(50))
 
     def to_dict(self):
         return {
@@ -936,6 +959,7 @@ class Vulnerability(db.Model):
             'affected_url': self.affected_url, 'parameter': self.parameter,
             'payload': self.payload, 'evidence': self.evidence, 'remediation': self.remediation,
             'cvss_score': self.cvss_score, 'cwe_id': self.cwe_id,
+            'zap_alert_id': self.zap_alert_id,
             'discovered_at': self.discovered_at.isoformat(),
             # Frontend compatibility mapping
             'scanId': self.scan_id,
@@ -1759,6 +1783,347 @@ def dispatch_scan(scan_id, target_url, config):
         logger.info(
             "scan %s started in background thread (threading fallback)", scan_id)
 
+
+# ─── ZAP Scan State Tracking ─────────────────────────────────────────────────
+# Maps VulnScanPro scan_id → {'spider_id': str|None, 'ascan_id': str|None}
+# Used by /api/zap/scan/stop to send stop signals to ZAP.
+_zap_active_scans: dict = {}
+_zap_scan_lock = threading.Lock()
+
+
+class _ZapScanCancelled(Exception):
+    """Raised inside run_zap_scan_bg to abort the scan cleanly."""
+
+
+def run_zap_scan_bg(scan_id: str, target_url: str, config: dict) -> None:
+    """
+    Full ZAP scan orchestration — runs inside a background daemon thread.
+
+    Workflow:
+        1. Validate ZAP is reachable
+        2. Create fresh ZAP session
+        3. Spider → wait
+        4. Passive scan → wait
+        5. Active scan → wait
+        6. Fetch and map alerts → save Vulnerability rows
+        7. Mark Scan as completed / failed / cancelled
+
+    Progress is broadcast to the browser via Socket.IO 'scan_progress' events
+    using the same room/event contract as the native VulnerabilityScanner.
+    ZAP_API_URL and ZAP_API_KEY are never logged or returned to the client.
+    """
+    logger.info('[ZAP] run_zap_scan_bg started — scan_id=%s target=%s', scan_id, target_url)
+
+    def _emit(message: str, progress: int, vuln_data: dict = None):
+        """Emit a scan_progress Socket.IO event AND persist progress to DB.
+
+        Persisting to the DB on every step means the HTTP polling fallback
+        always reads the correct live progress, even when Socket.IO events
+        are dropped (e.g. WinError 10038 / browser not yet in room).
+        """
+        # ── Persist progress so HTTP polling sees real-time state ──────────
+        try:
+            if scan.progress != progress:
+                scan.progress = progress
+                db.session.commit()
+        except Exception as _pe:
+            logger.debug('[ZAP] progress DB persist failed: %s', _pe)
+        # ── Emit over Socket.IO (best-effort) ─────────────────────────────
+        payload = {'scan_id': scan_id, 'message': message, 'progress': progress}
+        if vuln_data:
+            payload['vulnerability'] = vuln_data
+        try:
+            socketio.emit('scan_progress', payload, room=scan_id)
+        except Exception as _e:
+            logger.warning('[ZAP] socketio.emit failed: %s', _e)
+
+    def _is_cancelled() -> bool:
+        """Return True if the scan has been requested to stop."""
+        with _zap_scan_lock:
+            entry = _zap_active_scans.get(scan_id, {})
+            return entry.get('cancelled', False)
+
+    with app.app_context():
+        # ── 0. Load the scan record ────────────────────────────────────────
+        scan = Scan.query.get(scan_id)
+        if not scan:
+            logger.error('[ZAP] Scan %s not found in DB — aborting', scan_id)
+            return
+
+        try:
+            # Mark as running and set initial progress so polling sees it
+            scan.status = 'running'
+            scan.progress = 2
+            scan.started_at = datetime.utcnow()
+            db.session.commit()
+            _emit('ZAP scan initialising…', 2)
+
+            # ── 1. ZAP health check ────────────────────────────────────────
+            _emit('Checking ZAP availability…', 5)
+            availability = zap_service.check_zap_availability()
+            if not availability.get('reachable'):
+                msg = availability.get('message', 'ZAP is not reachable.')
+                logger.error('[ZAP] Scan %s aborted — ZAP unreachable: %s', scan_id, msg)
+                scan.status = 'failed'
+                scan.completed_at = datetime.utcnow()
+                db.session.commit()
+                _emit(f'ZAP unavailable: {msg}', 0)
+                return
+            logger.info('[ZAP] ZAP version %s confirmed reachable', availability.get('version'))
+            _emit(f'ZAP {availability.get("version", "")} is online', 8)
+
+            if _is_cancelled():
+                raise _ZapScanCancelled()
+
+            # ── 2. New ZAP session ─────────────────────────────────────────
+            _emit('Creating a fresh ZAP session…', 10)
+            session_name = scan_id[:8]
+            zap_service.new_session(session_name)
+            zap_service.set_zap_mode('standard')
+
+            # Register this scan in the active-scans tracker so /stop can reach it
+            with _zap_scan_lock:
+                _zap_active_scans[scan_id] = {
+                    'spider_id': None,
+                    'ascan_id': None,
+                    'cancelled': False,
+                }
+
+            if _is_cancelled():
+                raise _ZapScanCancelled()
+
+            # ── 3. Spider scan ─────────────────────────────────────────────
+            max_depth = config.get('scan_depth', 5)
+            _emit('Starting spider crawl…', 12)
+            spider_id = zap_service.start_spider(target_url, max_depth=max_depth)
+            scan.zap_scan_id = spider_id
+            scan.progress = 12
+            db.session.commit()
+
+            with _zap_scan_lock:
+                if scan_id in _zap_active_scans:
+                    _zap_active_scans[scan_id]['spider_id'] = spider_id
+
+            def _spider_cb(pct: int, msg: str):
+                # Map spider 0–100 to overall 12–40
+                overall = 12 + int(pct * 0.28)
+                scan.progress = overall
+                db.session.commit()
+                _emit(msg, overall)
+
+            discovered_urls = zap_service.wait_for_spider(
+                spider_id,
+                progress_callback=_spider_cb,
+                cancelled_check=_is_cancelled,
+            )
+            scan.total_urls = len(discovered_urls)
+            db.session.commit()
+            _emit(f'Spider complete — {len(discovered_urls)} URL(s) found', 40)
+            logger.info('[ZAP] Spider done — %d URL(s)', len(discovered_urls))
+
+            if _is_cancelled():
+                raise _ZapScanCancelled()
+
+            # ── 4. Passive scan ────────────────────────────────────────────
+            _emit('Running passive scan analysis…', 42)
+
+            def _pscan_cb(pct: int, msg: str):
+                overall = 42 + int(pct * 0.08)  # 42–50 range while waiting
+                scan.progress = overall
+                db.session.commit()
+                _emit(msg, overall)
+
+            zap_service.wait_for_passive_scan(
+                progress_callback=_pscan_cb,
+                cancelled_check=_is_cancelled,
+            )
+            scan.progress = 50
+            db.session.commit()
+            _emit('Passive scan complete', 50)
+
+            if _is_cancelled():
+                raise _ZapScanCancelled()
+
+            # ── 5. Active scan ─────────────────────────────────────────────
+            _emit('Starting active (attack) scan…', 52)
+            
+            # Verify the target host is in ZAP's sites map before running active scan.
+            # If ZAP failed to connect to the target during spider crawl (connection timeout/refused),
+            # the domain won't be in the scan tree, and active scan will throw a cryptic 400 url_not_found.
+            try:
+                from urllib.parse import urlparse
+                target_host = urlparse(target_url).netloc.lower().split(':')[0]
+                sites_data = zap_service._zap_request('/JSON/core/view/sites/')
+                sites = sites_data.get('sites', [])
+                has_site = False
+                for site in sites:
+                    if urlparse(site).netloc.lower().split(':')[0] == target_host:
+                        has_site = True
+                        break
+                if not has_site:
+                    raise zap_service.ZapScanError(
+                        f"ZAP could not connect to '{target_host}'. Connection timed out during spider crawl. "
+                        "Verify the target URL is correct, online, and accepts incoming connections."
+                    )
+            except Exception as _e:
+                if isinstance(_e, zap_service.ZapScanError):
+                    raise _e
+                logger.warning('[ZAP] Pre-scan sites check failed to run: %s', _e)
+
+            scan_policy = config.get('scan_policy', '')
+            ascan_id = zap_service.start_active_scan(target_url, scan_policy=scan_policy)
+            scan.zap_scan_id = ascan_id
+            db.session.commit()
+
+
+            with _zap_scan_lock:
+                if scan_id in _zap_active_scans:
+                    _zap_active_scans[scan_id]['ascan_id'] = ascan_id
+
+            def _ascan_cb(pct: int, msg: str):
+                # Map active-scan 0–100 to overall 52–90
+                overall = 52 + int(pct * 0.38)
+                scan.progress = overall
+                scan.scanned_urls = int(len(discovered_urls) * pct / 100)
+                db.session.commit()
+                _emit(msg, overall)
+
+            zap_service.wait_for_active_scan(
+                ascan_id,
+                progress_callback=_ascan_cb,
+                cancelled_check=_is_cancelled,
+            )
+            scan.progress = 90
+            db.session.commit()
+            _emit('Active scan complete — collecting results…', 90)
+
+            if _is_cancelled():
+                raise _ZapScanCancelled()
+
+            # ── 6. Fetch alerts and persist vulnerabilities ────────────────
+            _emit('Importing ZAP alerts…', 92)
+            try:
+                alerts = zap_service.get_alerts(base_url=target_url)
+            except zap_service.ZapError as exc:
+                logger.warning('[ZAP] Could not fetch alerts for %s: %s', scan_id, exc)
+                alerts = []
+
+            logger.info('[ZAP] %d alert(s) returned for scan %s', len(alerts), scan_id)
+
+            # Deduplicate by zap_alert_id + affected_url to avoid double-importing
+            existing_keys = set()
+            for row in Vulnerability.query.filter_by(scan_id=scan_id).all():
+                existing_keys.add((row.zap_alert_id, row.affected_url))
+
+            imported = 0
+            for alert in alerts:
+                vuln_dict = zap_service.map_alert_to_vulnerability(alert, scan_id)
+                key = (vuln_dict.get('zap_alert_id'), vuln_dict.get('affected_url'))
+                if key in existing_keys:
+                    continue
+                existing_keys.add(key)
+
+                # Strip the helper field before passing to the ORM constructor
+                zap_alert_id = vuln_dict.pop('zap_alert_id', None)
+                vuln = Vulnerability(zap_alert_id=zap_alert_id, **vuln_dict)
+                db.session.add(vuln)
+
+                try:
+                    db.session.add(AuditLog(
+                        event_type='vuln_found',
+                        username='system',
+                        ip_address='127.0.0.1',
+                        details=(
+                            f'[ZAP] [{vuln.severity.upper()}] {vuln.title} '
+                            f'at {vuln.affected_url} (Scan: {scan_id})'
+                        )
+                    ))
+                except Exception:
+                    pass
+
+                # Emit each new finding to the browser in real-time
+                _emit(
+                    f'Found: [{vuln.severity.upper()}] {vuln.title}',
+                    92,
+                    vuln_data={
+                        'title': vuln.title,
+                        'severity': vuln.severity,
+                        'affected_url': vuln.affected_url,
+                        'vuln_type': vuln.vuln_type,
+                        'description': vuln.description,
+                        'cvss_score': vuln.cvss_score,
+                    }
+                )
+                imported += 1
+
+            db.session.commit()
+            logger.info('[ZAP] %d vulnerability/vulnerabilities saved for scan %s', imported, scan_id)
+
+            # ── 7. Mark scan as completed ──────────────────────────────────
+            scan.status = 'completed'
+            scan.progress = 100
+            scan.completed_at = datetime.utcnow()
+            db.session.commit()
+            _emit(f'Scan complete — {imported} finding(s) imported', 100)
+            logger.info('[ZAP] Scan %s completed successfully', scan_id)
+
+        except _ZapScanCancelled:
+            logger.info('[ZAP] Scan %s was cancelled', scan_id)
+            scan.status = 'cancelled'
+            scan.completed_at = datetime.utcnow()
+            db.session.commit()
+            _emit('Scan cancelled by user.', scan.progress or 0)
+
+        except zap_service.ZapTimeoutError as exc:
+            logger.error('[ZAP] Scan %s timed out: %s', scan_id, exc)
+            scan.status = 'failed'
+            scan.completed_at = datetime.utcnow()
+            db.session.commit()
+            _emit(f'Scan timed out: {exc}', scan.progress or 0)
+
+        except zap_service.ZapError as exc:
+            logger.error('[ZAP] Scan %s ZAP error: %s', scan_id, exc)
+            scan.status = 'failed'
+            scan.completed_at = datetime.utcnow()
+            db.session.commit()
+            
+            # Translate cryptic ZAP url_not_found or 400 responses into user-friendly message
+            err_msg = str(exc)
+            if 'url_not_found' in err_msg or 'URL Not Found' in err_msg:
+                err_msg = "ZAP could not reach the target site (connection timed out). Verify that the URL is online and accessible."
+            
+            _emit(f'ZAP error: {err_msg}', scan.progress or 0)
+
+
+        except Exception as exc:
+            logger.exception('[ZAP] Scan %s unexpected error: %s', scan_id, exc)
+            try:
+                scan.status = 'failed'
+                scan.completed_at = datetime.utcnow()
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
+            _emit(f'Scan failed unexpectedly: {exc}', scan.progress or 0)
+
+        finally:
+            # Always clean up the active-scans registry
+            with _zap_scan_lock:
+                _zap_active_scans.pop(scan_id, None)
+
+
+
+def dispatch_zap_scan(scan_id: str, target_url: str, config: dict) -> None:
+    """
+    Launch a ZAP scan as a Flask-SocketIO background task.
+    """
+    socketio.start_background_task(
+        run_zap_scan_bg,
+        scan_id,
+        target_url,
+        config
+    )
+
+    logger.info('[ZAP] ZAP scan %s dispatched to background task', scan_id)
 # ============ REPORT GENERATOR ============
 
 
@@ -1999,8 +2364,32 @@ def _log_validation_failure(route, err, remote_addr):
 
 @app.route('/')
 def serve_index():
-    from flask import send_file
-    return send_file(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'vuln-scanner-app.html'))
+    """Serve the SPA HTML with a cache-busting version stamp on app.js and app.css.
+
+    The browser caches static files aggressively; without a version query string
+    every server-side edit to app.js is invisible until the user manually hard-
+    refreshes (Ctrl+Shift+R).  Injecting ?v=<timestamp> at request time forces
+    a fresh fetch whenever the server restarts.
+    """
+    import time
+    html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             'vuln-scanner-app.html')
+    with open(html_path, 'r', encoding='utf-8') as f:
+        html = f.read()
+    # Stamp both static assets so edits are immediately visible after restart
+    stamp = int(time.time())
+    html = html.replace('src="static/app.js"',
+                        f'src="static/app.js?v={stamp}"')
+    html = html.replace("src='static/app.js'",
+                        f"src='static/app.js?v={stamp}'")
+    html = html.replace('href="static/app.css"',
+                        f'href="static/app.css?v={stamp}"')
+    html = html.replace("href='static/app.css'",
+                        f"href='static/app.css?v={stamp}'")
+    from flask import Response
+    return Response(html, mimetype='text/html',
+                    headers={'Cache-Control': 'no-store'})
+
 
 
 @app.route('/api/auth/register', methods=['POST'])
@@ -2618,6 +3007,10 @@ def cancel_scan(scan_id):
 @app.route('/api/scans/<scan_id>', methods=['GET'])
 @jwt_required()
 def get_scan(scan_id):
+    # Expire ALL objects in this session so SQLAlchemy re-reads from the DB.
+    # Without this, the identity map returns a cached copy with stale progress
+    # when the background task has committed new values in its own session.
+    db.session.expire_all()
     scan = Scan.query.get_or_404(scan_id)
     return jsonify(scan.to_dict())
 
@@ -2852,12 +3245,563 @@ def get_dashboard_stats():
         'recent_scans': [s.to_dict() for s in sorted(scans, key=lambda x: x.started_at or datetime.min, reverse=True)[:5]]
     })
 
+# ============ ZAP PROXY API ROUTES ==========================================
+# ALL ZAP communication happens here — inside Flask.
+# The browser NEVER sees ZAP_API_URL, ZAP_API_KEY, or port 8080.
+# Every endpoint requires a valid JWT token.
+
+
+def _zap_unavailable_response():
+    """Standard 503 returned when ZAP is not configured or unreachable."""
+    return jsonify({
+        'status': 'error',
+        'code': 'ZAP_NOT_CONFIGURED',
+        'message': (
+            'OWASP ZAP integration is not configured on this server. '
+            'Set ZAP_API_URL and ZAP_API_KEY environment variables and '
+            'ensure the Cloudflare tunnel is running.'
+        ),
+    }), 503
+
+
+@app.route('/api/zap/health', methods=['GET'])
+@jwt_required()
+def zap_health():
+    """
+    GET /api/zap/health
+    Quick liveness check — is ZAP reachable through the Cloudflare tunnel?
+
+    Response 200:
+        { "status": "ok", "zap_reachable": true, "zap_version": "2.15.0" }
+    Response 503:
+        { "status": "error", "zap_reachable": false, "message": "..." }
+    """
+    if not zap_service.is_configured():
+        return jsonify({
+            'status': 'error',
+            'zap_reachable': False,
+            'message': 'ZAP_API_URL is not configured.',
+        }), 503
+    result = zap_service.check_zap_availability()
+    http_status = 200 if result['reachable'] else 503
+    return jsonify({
+        'status': 'ok' if result['reachable'] else 'error',
+        'zap_reachable': result['reachable'],
+        'zap_version': result.get('version'),
+        'message': result.get('message'),
+    }), http_status
+
+
+@app.route('/api/zap/status', methods=['GET'])
+@jwt_required()
+def zap_status():
+    """
+    GET /api/zap/status
+    Detailed ZAP status: version, operating mode, alerts in current session.
+    ZAP_API_URL and ZAP_API_KEY are NEVER included in this response.
+
+    Response 200:
+        { "status": "ok", "zap_reachable": true, "zap_version": "...",
+          "zap_mode": "standard", "alerts_in_session": 0 }
+    """
+    if not zap_service.is_configured():
+        return _zap_unavailable_response()
+    info = zap_service.get_zap_info()
+    return jsonify({
+        'status': 'ok' if info.get('reachable') else 'error',
+        'zap_reachable':      info.get('reachable', False),
+        'zap_version':        info.get('version'),
+        'zap_mode':           info.get('mode'),
+        'alerts_in_session':  info.get('alerts_in_session', 0),
+        'message':            info.get('message'),
+    })
+
+
+@app.route('/api/zap/scan/start', methods=['POST'])
+@jwt_required()
+def zap_scan_start():
+    """
+    POST /api/zap/scan/start
+    Start a full ZAP scan (spider → passive → active) on a target.
+
+    Request body:
+        { "target_id": "<uuid>", "scan_type": "full" }
+
+    Response 201:
+        { "scan_id": "<uuid>", "status": "started", "target_url": "..." }
+    Response 400 / 503:
+        { "status": "error", "message": "..." }
+    """
+    if not zap_service.is_configured():
+        return _zap_unavailable_response()
+
+    user_id = get_jwt_identity()
+    data = request.get_json(silent=True) or {}
+    target_id = data.get('target_id', '').strip()
+    if not target_id:
+        return jsonify({'status': 'error', 'message': 'target_id is required.'}), 400
+
+    target = Target.query.get(target_id)
+    if not target:
+        return jsonify({'status': 'error', 'message': 'Target not found.'}), 404
+
+    # Ownership check
+    if target.project.user_id != user_id:
+        return jsonify({'status': 'error', 'message': 'Access denied.'}), 403
+
+    # URL validation (before sending to ZAP)
+    valid, reason = zap_service.validate_scan_target(target.url)
+    if not valid:
+        return jsonify({'status': 'error', 'message': f'Invalid target URL: {reason}'}), 400
+
+    # Quick ZAP reachability check before creating the DB record
+    availability = zap_service.check_zap_availability()
+    if not availability['reachable']:
+        return jsonify({
+            'status': 'error',
+            'code': 'ZAP_UNREACHABLE',
+            'message': f'ZAP is not reachable: {availability["message"]}',
+        }), 503
+
+    # Create Scan record
+    scan = Scan(
+        target_id=target.id,
+        config=json.dumps(data.get('config', {})),
+        scan_engine='zap',
+    )
+    db.session.add(scan)
+    try:
+        user = User.query.get(user_id)
+        db.session.add(AuditLog(
+            event_type='zap_scan_start',
+            username=user.username if user else 'unknown',
+            ip_address=request.remote_addr,
+            details=f"ZAP scan started on target '{target.url}' (Scan ID: {scan.id})",
+        ))
+    except Exception:
+        pass
+    db.session.commit()
+
+    # Dispatch to background thread
+    dispatch_zap_scan(scan.id, target.url, data.get('config', {}))
+
+    logger.info('[ZAP] Scan %s dispatched for target %r (user %s)',
+                scan.id[:8], target.url, user_id)
+    return jsonify({
+        'status': 'started',
+        'scan_id': scan.id,
+        'target_url': target.url,
+        'scan_engine': 'zap',
+    }), 201
+
+
+@app.route('/api/zap/scan/stop/<scan_id>', methods=['POST'])
+@jwt_required()
+def zap_scan_stop(scan_id):
+    """
+    POST /api/zap/scan/stop/<scan_id>
+    Request cancellation of a running ZAP scan.
+    Adds the scan_id to the shared _cancelled_scans set (same mechanism
+    used by the native engine cancel endpoint).
+    Also sends stop signals directly to ZAP for spider and active scan.
+
+    Response 200:
+        { "status": "ok", "message": "Cancellation requested", "scan_id": "..." }
+    """
+    scan = Scan.query.get_or_404(scan_id)
+    if scan.status not in ('pending', 'running'):
+        return jsonify({
+            'status': 'error',
+            'message': f'Scan is already {scan.status}.',
+        }), 400
+
+    # Signal the background thread via the shared cancel set
+    with _cancel_lock:
+        _cancelled_scans.add(scan_id)
+
+    # Send stop directly to ZAP in case the thread is mid-poll
+    with _zap_scan_lock:
+        state = _zap_active_scans.get(scan_id, {})
+    ascan_id = state.get('ascan_id')
+    if ascan_id:
+        zap_service.stop_active_scan(ascan_id)
+    if zap_service.get_ajax_spider_status() == 'running':
+        zap_service.stop_ajax_spider()
+
+    logger.info('[ZAP] Cancellation requested for scan %s', scan_id[:8])
+    return jsonify({
+        'status': 'ok',
+        'message': 'Cancellation requested.',
+        'scan_id': scan_id,
+    })
+
+
+@app.route('/api/zap/scan/status/<scan_id>', methods=['GET'])
+@jwt_required()
+def zap_scan_status(scan_id):
+    """
+    Lightweight live-progress endpoint used by the frontend poller.
+    Uses raw SQL to bypass SQLAlchemy's identity map so background-task
+    commits are always visible (no stale-cache problem).
+    """
+    from sqlalchemy import text
+    row = db.session.execute(
+        text('SELECT status, progress, completed_at FROM scan WHERE id = :id'),
+        {'id': scan_id}
+    ).fetchone()
+    if not row:
+        return jsonify({'error': 'Scan not found'}), 404
+    # Also count vulns with raw SQL
+    vc = db.session.execute(
+        text('SELECT COUNT(*) FROM vulnerability WHERE scan_id = :id'),
+        {'id': scan_id}
+    ).scalar() or 0
+    return jsonify({
+        'scan_id':    scan_id,
+        'status':     row[0],
+        'progress':   row[1] or 0,
+        'completed':  row[2] is not None,
+        'vuln_count': vc,
+    })
+
+
+
+@app.route('/api/zap/spider/start', methods=['POST'])
+@jwt_required()
+def zap_spider_start():
+    """
+    POST /api/zap/spider/start
+    Start a ZAP spider scan only (no active scan).
+
+    Request body:
+        { "target_url": "https://example.com" }
+
+    Response 200:
+        { "status": "ok", "zap_spider_id": "0" }
+    """
+    if not zap_service.is_configured():
+        return _zap_unavailable_response()
+    data = request.get_json(silent=True) or {}
+    target_url = (data.get('target_url') or '').strip()
+    valid, reason = zap_service.validate_scan_target(target_url)
+    if not valid:
+        return jsonify({'status': 'error', 'message': reason}), 400
+    try:
+        spider_id = zap_service.start_spider(target_url)
+        return jsonify({'status': 'ok', 'zap_spider_id': spider_id})
+    except zap_service.ZapError as exc:
+        return jsonify({'status': 'error', 'message': str(exc)}), 502
+
+
+@app.route('/api/zap/spider/status/<zap_spider_id>', methods=['GET'])
+@jwt_required()
+def zap_spider_status(zap_spider_id):
+    """
+    GET /api/zap/spider/status/<zap_spider_id>
+    Return spider progress (0–100) for the given ZAP spider scan ID.
+
+    Response 200:
+        { "status": "ok", "progress": 45 }
+    """
+    if not zap_service.is_configured():
+        return _zap_unavailable_response()
+    try:
+        progress = zap_service.get_spider_status(zap_spider_id)
+        return jsonify({'status': 'ok', 'progress': progress})
+    except zap_service.ZapError as exc:
+        return jsonify({'status': 'error', 'message': str(exc)}), 502
+
+
+@app.route('/api/zap/ascan/start', methods=['POST'])
+@jwt_required()
+def zap_ascan_start():
+    """
+    POST /api/zap/ascan/start
+    Start a ZAP active scan only.
+
+    Request body:
+        { "target_url": "https://example.com", "scan_policy": "" }
+
+    Response 200:
+        { "status": "ok", "zap_ascan_id": "0" }
+    """
+    if not zap_service.is_configured():
+        return _zap_unavailable_response()
+    data = request.get_json(silent=True) or {}
+    target_url = (data.get('target_url') or '').strip()
+    valid, reason = zap_service.validate_scan_target(target_url)
+    if not valid:
+        return jsonify({'status': 'error', 'message': reason}), 400
+    try:
+        ascan_id = zap_service.start_active_scan(
+            target_url,
+            scan_policy=data.get('scan_policy', ''),
+        )
+        return jsonify({'status': 'ok', 'zap_ascan_id': ascan_id})
+    except zap_service.ZapError as exc:
+        return jsonify({'status': 'error', 'message': str(exc)}), 502
+
+
+@app.route('/api/zap/ascan/status/<zap_ascan_id>', methods=['GET'])
+@jwt_required()
+def zap_ascan_status(zap_ascan_id):
+    """
+    GET /api/zap/ascan/status/<zap_ascan_id>
+    Return active scan progress (0–100).
+
+    Response 200:
+        { "status": "ok", "progress": 72 }
+    """
+    if not zap_service.is_configured():
+        return _zap_unavailable_response()
+    try:
+        progress = zap_service.get_active_scan_status(zap_ascan_id)
+        return jsonify({'status': 'ok', 'progress': progress})
+    except zap_service.ZapError as exc:
+        return jsonify({'status': 'error', 'message': str(exc)}), 502
+
+
+@app.route('/api/zap/pscan/status', methods=['GET'])
+@jwt_required()
+def zap_pscan_status():
+    """
+    GET /api/zap/pscan/status
+    Return passive scan queue depth. 0 = passive scan complete.
+
+    Response 200:
+        { "status": "ok", "records_to_scan": 0 }
+    """
+    if not zap_service.is_configured():
+        return _zap_unavailable_response()
+    try:
+        remaining = zap_service.get_passive_scan_queue()
+        return jsonify({'status': 'ok', 'records_to_scan': remaining})
+    except zap_service.ZapError as exc:
+        return jsonify({'status': 'error', 'message': str(exc)}), 502
+
+
+@app.route('/api/zap/alerts', methods=['GET'])
+@jwt_required()
+def zap_alerts():
+    """
+    GET /api/zap/alerts?base_url=https://example.com&risk_level=High
+    Fetch raw ZAP alerts from the current session.
+    All filtering happens server-side — the ZAP URL is never returned.
+
+    Query params (all optional):
+        base_url  — filter to alerts under this URL prefix
+        risk_level — 'High' | 'Medium' | 'Low' | 'Informational'
+
+    Response 200:
+        { "status": "ok", "count": 15, "alerts": [ {...}, ... ] }
+    """
+    if not zap_service.is_configured():
+        return _zap_unavailable_response()
+    base_url = request.args.get('base_url')
+    risk_level = request.args.get('risk_level')
+    try:
+        alerts = zap_service.get_alerts(
+            base_url=base_url, risk_level=risk_level
+        )
+        return jsonify({
+            'status': 'ok',
+            'count': len(alerts),
+            'alerts': alerts,
+        })
+    except zap_service.ZapError as exc:
+        return jsonify({'status': 'error', 'message': str(exc)}), 502
+
+
+@app.route('/api/zap/risk_summary', methods=['GET'])
+@jwt_required()
+def zap_risk_summary():
+    """
+    GET /api/zap/risk_summary?base_url=https://example.com
+    Return a severity-breakdown risk summary computed from ZAP alerts.
+
+    Response 200:
+        { "status": "ok", "summary": {
+            "critical": 0, "high": 2, "medium": 5,
+            "low": 3, "info": 8, "total": 18, "risk_score": 70
+          }}
+    """
+    if not zap_service.is_configured():
+        return _zap_unavailable_response()
+    base_url = request.args.get('base_url')
+    try:
+        summary = zap_service.get_risk_summary(base_url=base_url)
+        return jsonify({'status': 'ok', 'summary': summary})
+    except zap_service.ZapError as exc:
+        return jsonify({'status': 'error', 'message': str(exc)}), 502
+
+
+@app.route('/api/zap/import_alerts', methods=['POST'])
+@jwt_required()
+def zap_import_alerts():
+    """
+    POST /api/zap/import_alerts
+    Import the current ZAP session's alerts for a target into the VulnScanPro
+    database as Vulnerability records linked to a new Scan row.
+
+    Useful when the user has already run ZAP manually and wants to persist the
+    results — no spider or active scan is triggered here.
+
+    Request body:
+        { "target_id": "<uuid>" }
+
+    Response 201:
+        { "status": "ok", "scan_id": "<uuid>", "imported": 15 }
+    """
+    if not zap_service.is_configured():
+        return _zap_unavailable_response()
+
+    user_id = get_jwt_identity()
+    data = request.get_json(silent=True) or {}
+    target_id = data.get('target_id', '').strip()
+    if not target_id:
+        return jsonify({'status': 'error', 'message': 'target_id is required.'}), 400
+
+    target = Target.query.get(target_id)
+    if not target:
+        return jsonify({'status': 'error', 'message': 'Target not found.'}), 404
+    if target.project.user_id != user_id:
+        return jsonify({'status': 'error', 'message': 'Access denied.'}), 403
+
+    try:
+        alerts = zap_service.get_alerts(base_url=target.url)
+    except zap_service.ZapError as exc:
+        return jsonify({'status': 'error', 'message': str(exc)}), 502
+
+    # Create a completed Scan record to hold the imported results
+    scan = Scan(
+        target_id=target.id,
+        config=json.dumps({'source': 'zap_import'}),
+        scan_engine='zap',
+        status='completed',
+        started_at=datetime.utcnow(),
+        completed_at=datetime.utcnow(),
+        progress=100,
+        total_urls=len(alerts),
+    )
+    db.session.add(scan)
+    db.session.flush()   # Obtain scan.id before adding Vulnerability rows
+
+    imported = 0
+    for alert in alerts:
+        vuln_data = zap_service.map_alert_to_vulnerability(alert, scan.id)
+        zap_aid = vuln_data.pop('zap_alert_id', None)
+        existing = Vulnerability.query.filter_by(
+            scan_id=scan.id,
+            zap_alert_id=zap_aid or '',
+            affected_url=vuln_data.get('affected_url', ''),
+        ).first()
+        if not existing:
+            vuln = Vulnerability(**vuln_data)
+            vuln.zap_alert_id = zap_aid
+            db.session.add(vuln)
+            imported += 1
+
+    try:
+        user = User.query.get(user_id)
+        db.session.add(AuditLog(
+            event_type='zap_import_alerts',
+            username=user.username if user else 'unknown',
+            ip_address=request.remote_addr,
+            details=(
+                f"Imported {imported} ZAP alert(s) for target '{target.url}' "
+                f"(Scan ID: {scan.id})"
+            ),
+        ))
+    except Exception:
+        pass
+
+    db.session.commit()
+    logger.info('[ZAP] Imported %d alert(s) for target %r (scan %s)',
+                imported, target.url, scan.id[:8])
+    return jsonify({
+        'status': 'ok',
+        'scan_id': scan.id,
+        'imported': imported,
+        'target_url': target.url,
+    }), 201
+
+
+# ============ END ZAP PROXY API ROUTES =======================================
+
+
 # WebSocket events
 
 
 @socketio.on('join_scan')
 def on_join_scan(data):
-    join_room(data['scan_id'])
+    try:
+        scan_id = data.get('scan_id')
+        if not scan_id:
+            return
+
+        join_room(scan_id)
+        logger.info('[Socket.IO] Client joined room: %s', scan_id)
+
+        # ── Catch-up: query the DB directly (we're already in an app context
+        # pushed by Flask-SocketIO — no need for a nested with app.app_context()).
+        # If the scan is already done (or mid-run) we emit the real state
+        # immediately so the UI never stays stuck at 0%.
+        try:
+            scan = db.session.get(Scan, scan_id)
+        except Exception:
+            scan = Scan.query.filter_by(id=scan_id).first()
+
+        if scan:
+            status   = scan.status   or 'pending'
+            progress = scan.progress or 0
+            vuln_count = Vulnerability.query.filter_by(scan_id=scan_id).count()
+
+            print(f"[join_scan] scan={scan_id[:8]} status={status} progress={progress} vulns={vuln_count}")
+
+            if status == 'completed':
+                msg = f'Scan complete — {vuln_count} finding(s) imported'
+                emit('scan_progress', {
+                    'scan_id': scan_id,
+                    'message': msg,
+                    'progress': 100,
+                }, room=scan_id)
+                print(f"[join_scan] ✅ Sent COMPLETED catch-up (100%)")
+
+            elif status in ('failed', 'cancelled'):
+                emit('scan_progress', {
+                    'scan_id': scan_id,
+                    'message': f'Scan {status}.',
+                    'progress': progress,
+                }, room=scan_id)
+                print(f"[join_scan] ⚠️  Sent {status.upper()} catch-up ({progress}%)")
+
+            elif status == 'running':
+                emit('scan_progress', {
+                    'scan_id': scan_id,
+                    'message': f'Scan in progress… {progress}%',
+                    'progress': progress,
+                }, room=scan_id)
+                print(f"[join_scan] 🔵 Sent RUNNING catch-up ({progress}%)")
+
+            else:
+                emit('scan_progress', {
+                    'scan_id': scan_id,
+                    'message': 'Socket.IO connection established',
+                    'progress': 1,
+                }, room=scan_id)
+                print(f"[join_scan] 🟡 Sent PENDING connection confirmation")
+        else:
+            print(f"[join_scan] ⚠️  Scan {scan_id[:8]} not found in DB")
+            emit('scan_progress', {
+                'scan_id': scan_id,
+                'message': 'Socket.IO connection established',
+                'progress': 1,
+            }, room=scan_id)
+
+    except Exception as e:
+        logger.error('[Socket.IO] join_scan error: %s', e)
+        import traceback; traceback.print_exc()
+
 
 
 def ensure_user_schema():
@@ -2892,6 +3836,26 @@ def ensure_user_schema():
             db.session.commit()
             logger.info(
                 "Migrated: added user.must_change_password column; flagged admin")
+        # ── ZAP integration columns (added in Step 2 migration) ────────────
+        scan_cols = {c['name'] for c in inspect(db.engine).get_columns('scan')}
+        if 'scan_engine' not in scan_cols:
+            db.session.execute(
+                text("ALTER TABLE scan ADD COLUMN scan_engine VARCHAR(20) DEFAULT 'native'"))
+            db.session.commit()
+            logger.info("Migrated: added scan.scan_engine column")
+        if 'zap_scan_id' not in scan_cols:
+            db.session.execute(
+                text('ALTER TABLE scan ADD COLUMN zap_scan_id VARCHAR(50)'))
+            db.session.commit()
+            logger.info("Migrated: added scan.zap_scan_id column")
+
+        vuln_cols = {c['name']
+                     for c in inspect(db.engine).get_columns('vulnerability')}
+        if 'zap_alert_id' not in vuln_cols:
+            db.session.execute(
+                text('ALTER TABLE vulnerability ADD COLUMN zap_alert_id VARCHAR(50)'))
+            db.session.commit()
+            logger.info("Migrated: added vulnerability.zap_alert_id column")
     except Exception as e:
         logger.warning("Schema migration check failed: %s", e)
 

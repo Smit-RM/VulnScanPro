@@ -25,10 +25,19 @@ services:
       HOST: 0.0.0.0
       PORT: "5000"
       REDIS_URL: redis://redis:6379/0
-      CORS_ORIGINS: http://127.0.0.1:5000,http://localhost:5000
+      CORS_ORIGINS: http://127.0.0.1:5000,http://localhost:5000,https://vulnscanpro-61fu.onrender.com
       REQUIRE_EMAIL_VERIFICATION: "0"
       SECRET_KEY: ${SECRET_KEY:-dev-only-change-me}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev-only-change-me}
+      # OWASP ZAP variables passed from host env
+      ZAP_API_URL: ${ZAP_API_URL:-}
+      ZAP_API_KEY: ${ZAP_API_KEY:-}
+      ZAP_CONNECT_TIMEOUT: ${ZAP_CONNECT_TIMEOUT:-10}
+      ZAP_REQUEST_TIMEOUT: ${ZAP_REQUEST_TIMEOUT:-30}
+      ZAP_SPIDER_TIMEOUT: ${ZAP_SPIDER_TIMEOUT:-600}
+      ZAP_PSCAN_TIMEOUT: ${ZAP_PSCAN_TIMEOUT:-120}
+      ZAP_ASCAN_TIMEOUT: ${ZAP_ASCAN_TIMEOUT:-3600}
+      ZAP_POLL_INTERVAL: ${ZAP_POLL_INTERVAL:-5}
     ports:
       - "5000:5000"
     volumes:
@@ -47,6 +56,15 @@ services:
       REQUIRE_EMAIL_VERIFICATION: "0"
       SECRET_KEY: ${SECRET_KEY:-dev-only-change-me}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev-only-change-me}
+      # OWASP ZAP variables passed from host env
+      ZAP_API_URL: ${ZAP_API_URL:-}
+      ZAP_API_KEY: ${ZAP_API_KEY:-}
+      ZAP_CONNECT_TIMEOUT: ${ZAP_CONNECT_TIMEOUT:-10}
+      ZAP_REQUEST_TIMEOUT: ${ZAP_REQUEST_TIMEOUT:-30}
+      ZAP_SPIDER_TIMEOUT: ${ZAP_SPIDER_TIMEOUT:-600}
+      ZAP_PSCAN_TIMEOUT: ${ZAP_PSCAN_TIMEOUT:-120}
+      ZAP_ASCAN_TIMEOUT: ${ZAP_ASCAN_TIMEOUT:-3600}
+      ZAP_POLL_INTERVAL: ${ZAP_POLL_INTERVAL:-5}
     volumes:
       - vulnscan-db:/app/instance
     depends_on:
