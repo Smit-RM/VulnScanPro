@@ -13,3 +13,4 @@ reportlab
 celery
 redis
 playwright
+python-dotenv
