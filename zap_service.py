@@ -158,18 +158,25 @@ def _zap_request(
     try:
         if method.upper() == 'POST':
             resp = session.post(url, params=params, headers=headers,
-                                timeout=_timeout)
+                                timeout=_timeout,
+                                allow_redirects=False)
         else:
             resp = session.get(url, params=params, headers=headers,
-                               timeout=_timeout)
+                               timeout=_timeout,
+                               allow_redirects=False)
     except requests.exceptions.ConnectionError as exc:
         raise ZapUnavailableError(
-            'Cannot connect to ZAP. Verify that the Cloudflare tunnel is '
+            'Cannot connect to ZAP. Verify that ngrok is '
             'running and OWASP ZAP is listening on port 8080.'
         ) from exc
     except requests.exceptions.Timeout as exc:
         raise ZapTimeoutError(
             f'ZAP request timed out after {_timeout}s (path: {path})'
+        ) from exc
+    except requests.exceptions.TooManyRedirects as exc:
+        raise ZapUnavailableError(
+            'ZAP request entered a redirect loop. Check your '
+            'ZAP_API_URL and ngrok configuration.'
         ) from exc
     except requests.exceptions.RequestException as exc:
         raise ZapUnavailableError(
