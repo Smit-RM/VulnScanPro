@@ -2572,8 +2572,19 @@ def login():
 @app.route('/api/auth/me', methods=['GET'])
 @jwt_required()
 def get_current_user():
-    user = User.query.get(get_jwt_identity())
-    return jsonify({'user': user.to_dict()})
+    user_id = get_jwt_identity()
+
+    user = User.query.get(user_id)
+
+    if user is None:
+        return jsonify({
+            "error": "User not found",
+            "user_id": user_id
+        }), 404
+
+    return jsonify({
+        "user": user.to_dict()
+    }), 200
 
 
 @app.route('/api/auth/refresh', methods=['POST'])
